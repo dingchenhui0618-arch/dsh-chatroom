@@ -1,0 +1,4 @@
+node_modules/
+tools/preview/public/
+*.log
+.DS_Store
