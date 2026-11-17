@@ -403,6 +403,62 @@ test('加入方的桌面端重启：屋里不会同时坐着两个他，旧那�
   }
 })
 
+test('加入方重启那一刻正交在手上的那一轮：跟着它到新那组，不会变成「对面没回应」', async () => {
+  // 给足窗口：这条用例要证明的是「重启回来接着跑完」，不是「超时落占位」。
+  process.env.DSH_CHATROOM_ASSIGN_TIMEOUT = '15000'
+  const host = await boot('host-carried', { reply: '宿主这边：收到。' })
+  const first = await boot('guest-carried', { reply: '重启前领的那一轮，我跑完了。' })
+  let restarted = null
+  try {
+    const created = await command(host, 'room.create', { name: '派发中重启' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(first, 'self.rename', { name: '周荻' })
+    await command(first, 'room.create', { name: '客' })
+    await command(first, 'member.createBot', {
+      roomId: (await snapshot(first)).rooms[0].id,
+      name: '阿丁',
+      role: '排期',
+    })
+    await command(first, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+    const before = await snapshot(host)
+    const dingId = before.rooms.find((row) => row.id === roomId).members.find((row) => row.name === '阿丁').id
+    const oldPeerId = before.lan.peers[0].id
+
+    // 拔线（不 leave）：宿主仍把这台机器算在线，于是这一轮被派出去、挂在那条旧 peerId 上。
+    await first.dispose()
+    await command(host, 'msg.send', { roomId, text: '@阿丁 重启前派给你的这一轮，回来再跑。' })
+    await until(async () => (await snapshot(host)).lan.pending >= 1, { label: '这一轮已经派在路上' })
+
+    // 重启回来：同一条 link（同一份 profile），宿主应当把在路上的这一轮也交回来。
+    const second = fakeCtx(first.dir, { reply: '重启前领的那一轮，我跑完了。' })
+    restarted = { ...second, dispose: await apply(second.ctx) }
+
+    const reply = await until(async () => {
+      const room = (await snapshot(host)).rooms.find((row) => row.id === roomId)
+      return room.messages.find((message) => message.authorName === '阿丁') ?? null
+    }, { timeoutMs: 6000, label: '新那组把在路上的那一轮跑完' })
+    assert.match(reply.text, /我跑完了/)
+    assert.equal(reply.authorId, dingId, '回话的还是同一个成员，不该换成新造的人')
+    assert.notEqual(reply.status, 'error')
+
+    const after = await snapshot(host)
+    const room = after.rooms.find((row) => row.id === roomId)
+    assert.equal(
+      room.messages.some((message) => message.status === 'error'),
+      false,
+      '人已经回来了，不该再落「没回上来」的失败占位',
+    )
+    assert.equal(after.lan.peers.length, 1, '屋里仍然只有它一台')
+    assert.notEqual(after.lan.peers[0].id, oldPeerId, '回来的是新的一代 peerId')
+  } finally {
+    delete process.env.DSH_CHATROOM_ASSIGN_TIMEOUT
+    await (restarted ? restarted.dispose() : Promise.resolve()).catch(() => {})
+    await first.dispose().catch(() => {})
+    await host.dispose().catch(() => {})
+  }
+})
+
 test('宿主解散房间：加入方留一张能清理的墓碑，不是发不出话也退不出的死胡同', async () => {
   const host = await boot('host-dissolve')
   const guest = await boot('guest-dissolve')

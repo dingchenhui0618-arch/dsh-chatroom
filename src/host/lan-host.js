@@ -345,6 +345,16 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     }
 
     const peerId = `p_${randomUUID().replace(/-/g, '').slice(0, 16)}`
+    /**
+     * 重启那一刻正交在它手上的那一轮，也要换主人。
+     *
+     * 远程 agent 的回合是「那台机器用自己本地 session 跑、跑完回传」：重启把那次运行
+     * 打断了，但宿主这边的派发还挂在旧的 peerId 上。不接过来的话，人明明已经回来了，
+     * 这一轮却只能在超时后落一条「对面机器没有回应」——看起来像它没理人。
+     */
+    const carried = [...assignments.values()].filter(
+      (row) => !row.done && adopted.some((other) => other.id === row.peerId),
+    )
     const label = String(guestMachine ?? '').trim().slice(0, 64) || address
     const peer = {
       id: peerId,
@@ -377,7 +387,12 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
             member.origin = origin
           }
         }
-        log('lan_peer_takeover', { machine: label, address, from: adopted.map((other) => other.machine) })
+        log('lan_peer_takeover', {
+          machine: label,
+          address,
+          from: adopted.map((other) => other.machine),
+          carried: carried.length,
+        })
       }
       // 接过来的那个人还是同一个人：名字以这次上报为准，成员 id 不动。
       const inherited = adopted.length
@@ -404,6 +419,13 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     })
 
     peers.set(peerId, peer)
+    // 换主人 + 重新计时：上一代剩下的等待窗口不该克扣新这一代的这一轮。
+    for (const row of carried) {
+      row.peerId = peerId
+      // 上一代可能已经把这条领走了（回合跑到一半才重启），新的一代要能重新领。
+      row.claimedAt = null
+      arm(row)
+    }
     wake()
     return {
       peerId,
@@ -412,6 +434,24 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       hostMachine: machine,
       snapshot: project(store.state, { lan: status(), viewerId: peer.selfMemberId }),
     }
+  }
+
+  /**
+   * 给一条派发计时：到点还没人回，就落失败占位，不让整轮卡死。
+   *
+   * 单独摘出来是因为它可能被重新计一次时（见 joinRoom 里「在路上的一轮」）：
+   * 那台机器重启回来了，这一轮要按新的等待窗口重新算，不能沿用上一代剩下的那几秒。
+   */
+  function arm(row) {
+    clearTimeout(row.timer)
+    row.timer = setTimeout(() => {
+      if (row.done) return
+      row.done = true
+      assignments.delete(row.id)
+      wake()
+      row.reject(Object.assign(new Error('对面机器没有回应。'), { code: 'lan_timeout' }))
+    }, assignTimeout())
+    row.timer.unref?.()
   }
 
   /**
@@ -442,14 +482,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         resolve,
         reject,
       }
-      row.timer = setTimeout(() => {
-        if (row.done) return
-        row.done = true
-        assignments.delete(id)
-        wake()
-        reject(Object.assign(new Error('对面机器没有回应。'), { code: 'lan_timeout' }))
-      }, assignTimeout())
-      row.timer.unref?.()
+      arm(row)
       assignments.set(id, row)
       wake()
     })
