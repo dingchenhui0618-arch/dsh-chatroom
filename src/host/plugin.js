@@ -74,6 +74,9 @@ export async function dispatch({ store, speaker, lan = null, command }) {
     case 'room.dissolve': {
       assertLocal(roomOf(input.roomId), '解散')
       store.commit((draft) => dissolveRoom(draft, { roomId: input.roomId }))
+      // 屋子都没了，还在跑的那一轮不用再等下去：模型/远程那边能停就停，
+      // 省掉一段没人会看见的等待，也不会在它收尾时把 agent 标成「上次失败」。
+      speaker?.stop(input.roomId)
       break
     }
     case 'room.activate': {

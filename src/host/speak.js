@@ -148,6 +148,14 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
       }
     } catch (error) {
       log('bot_turn_failed', { botId, error })
+      const alive = store.inspect((state) => getRoom(state, roomId))
+      // 屋子已经没了（被解散、或镜像那边收到解散）：这一轮的静默收尾不是 agent 的错。
+      // 把 room_not_found / cancelled 记成「上次失败」，用户会在 agent 列表里看到一条
+      // 莫名其妙的红色提示，而实际上它只是替一间不存在的屋子跑完了一次。
+      if (!alive) {
+        log('turn_abandoned', { roomId, botId, error })
+        return
+      }
       store.commit((state) => {
         const room = getRoom(state, roomId)
         const directory = state.bots.find((row) => row.id === bot.botId)

@@ -585,3 +585,38 @@ test('watch：revision 变了立刻返回，没变就等到超时', async () => 
     await dispose()
   }
 })
+
+test('房间说到一半被解散：那一轮安静收掉，不把 agent 记成「上次失败」', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  let release = () => {}
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const { ctx, routes } = fakeCtx(dir, { reply: '这句话没人看见了。', gate: () => gate })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '说到一半被解散' } })
+    const roomId = created.value.rooms[0].id
+    const made = await call(routes, 'command', { action: 'member.createBot', input: { roomId, name: 'A' } })
+    const botId = made.value.bots.at(-1).id
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 说一句' } })
+    // 这一轮已经跑起来了（agent 正卡在 gate 上），此时把屋子解散掉。
+    await tick(120)
+    const dissolved = await call(routes, 'command', { action: 'room.dissolve', input: { roomId } })
+    assert.equal(dissolved.ok, true)
+    release()
+    await tick(300)
+
+    const view = (await call(routes, 'snapshot', {})).value
+    assert.equal(view.rooms.some((row) => row.id === roomId), false, '屋子确实没了')
+    const bot = view.bots.find((row) => row.id === botId)
+    assert.equal(
+      bot.lastError ?? null,
+      null,
+      '屋子解散不是这个 agent 的错：不该把 room_not_found/cancelled 记成它的上次失败',
+    )
+  } finally {
+    release()
+    await dispose()
+  }
+})
