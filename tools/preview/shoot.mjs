@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -52,6 +53,14 @@ const shots = [
     open: '邀请',
     verify: ['invite-address', 'name-edit'],
     caption: '邀请另一台机器：局域网地址 + 房间码就是全部凭据；装 WSL/Hyper-V 的机器把真实网卡排前面，其余的列在下面并标出虚拟网卡',
+  },
+  {
+    name: 'join-error',
+    view: 'panel',
+    waitFor: '.cr-msg',
+    before: 'join-fail',
+    verify: 'join-error',
+    caption: '加入失败时：直说连不上哪台、填过的地址和房间码留着能改；失败的加入不会在列表里留下半间屋子',
   },
   {
     name: 'rules',
@@ -223,6 +232,74 @@ async function boundsOf(cdp, sessionId, selector) {
   )
 }
 
+/**
+ * 真的让插件去连一个连不上的地址：「刚占过又放掉」的那个端口号，确定没人监听。
+ * 走的是宿主那台真实的 `lan.join`，所以界面上那句报错是真的，不是摆拍出来的。
+ */
+let joinFailRooms = 0
+let joinFailTarget = ''
+
+async function attemptFailingJoin(cdp, sessionId) {
+  const probe = createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const closedPort = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+  joinFailTarget = `127.0.0.1:${closedPort}`
+  joinFailRooms = await evaluate(cdp, sessionId, `document.querySelectorAll('.cr-room').length`)
+  const opened = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const button = [...document.querySelectorAll('.cr-link-btn')].find((node) =>
+        node.textContent.includes('加入 LAN 房间'),
+      )
+      if (!button) return false
+      button.click()
+      return true
+    })()`,
+  )
+  if (!opened) throw new Error('点不开「+ 加入 LAN 房间」')
+  await sleep(200)
+  const filled = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const inputs = [...document.querySelectorAll('input.cr-field')]
+      const address = inputs.find((node) => String(node.placeholder || '').includes('对方地址'))
+      const code = inputs.find((node) => String(node.placeholder || '').includes('房间码'))
+      if (!address || !code) return false
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      const put = (el, value) => {
+        el.focus()
+        setter.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      put(address, ${JSON.stringify(joinFailTarget)})
+      put(code, 'ZZZZZZ')
+      return true
+    })()`,
+  )
+  if (!filled) throw new Error('填不进加入表单')
+  const submitted = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const button = [...document.querySelectorAll('button.cr-primary')].find(
+        (node) => node.textContent.trim() === '加入',
+      )
+      if (!button || button.disabled) return false
+      button.click()
+      return true
+    })()`,
+  )
+  if (!submitted) throw new Error('「加入」点不动（要么没找到，要么还是禁用的）')
+  for (let i = 0; i < 80; i += 1) {
+    if (await evaluate(cdp, sessionId, `Boolean(document.querySelector('.cr-error-bar'))`)) return
+    await sleep(100)
+  }
+  throw new Error('加入失败了，界面却没有报错')
+}
+
 function assertInside(box, message) {
   if (!box) throw new Error(`${message}：找不到元素`)
   const outside =
@@ -314,6 +391,9 @@ try {
       if (!opened) throw new Error(`点不到：${shot.open}`)
       await sleep(350)
     }
+    // 有的状态是「用户操作之后才出现」的（例如加入失败），得在拍照之前把它做出来，
+    // 否则截图拍的是操作前那张，断言却在操作后跑 —— 图和结论对不上。
+    if (shot.before === 'join-fail') await attemptFailingJoin(cdp, sessionId)
     // 截图要截「稳定下来的界面」，不是「刚好路过的中间态」：三台机器那张图里，
     // 远程 agent 的回复会在页面加载之后才落库，未读徽标会在面板可见的情况下
     // 自动清零 —— 等它清完再拍，否则同一份代码两次会拍出带徽标和不带徽标两张。
@@ -353,6 +433,45 @@ try {
       }
       if (!cleared) throw new Error('面板可见时新消息没有自动算已读')
       console.log('verified — 面板可见时新消息直接算已读（未读不会涨）')
+    }
+
+    // 加入失败：这是第二台机器的人最可能撞上的状态（地址写错、那台没开、码不对）。
+    // 界面必须说人话、把填过的内容留着，而且不能在列表里留下半间屋子让人以为进去了。
+    if (wants(shot, 'join-error')) {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          return {
+            error: text(document.querySelector('.cr-error-bar')),
+            inputs: [...document.querySelectorAll('input.cr-field')].map((node) => node.value),
+            rooms: document.querySelectorAll('.cr-room').length,
+            joinButton: [...document.querySelectorAll('button.cr-primary')].some(
+              (node) => node.textContent.trim() === '加入',
+            ),
+          }
+        })()`,
+      )
+      if (!/连不上/.test(state.error)) throw new Error(`报错没说清是连不上：${JSON.stringify(state.error)}`)
+      if (!state.error.includes(joinFailTarget)) {
+        throw new Error(`报错里没有对方地址（${joinFailTarget}），用户不知道该改哪：${JSON.stringify(state.error)}`)
+      }
+      // 「（fetch failed）」这种底层消息对用户等于没说：原因得翻成人话。
+      if (/fetch failed|ECONNREFUSED|lan_unreachable|rpc_failed|Error:/.test(state.error)) {
+        throw new Error(`报错里漏了内部错误码，人看不懂：${JSON.stringify(state.error)}`)
+      }
+      if (!/没在监听这个端口|连接超时|网络到不了|地址查不到|连接被对面断掉/.test(state.error)) {
+        throw new Error(`报错没说清是哪一类原因：${JSON.stringify(state.error)}`)
+      }
+      if (!state.inputs.includes(joinFailTarget) || !state.inputs.includes('ZZZZZZ')) {
+        throw new Error(`填过的地址/房间码被清掉了，得从零再敲一遍：${JSON.stringify(state.inputs)}`)
+      }
+      if (!state.joinButton) throw new Error('加入失败后表单自己收起来了')
+      if (state.rooms !== joinFailRooms) {
+        throw new Error(`加入失败却在房间列表里留下了屋子：${joinFailRooms} → ${state.rooms}`)
+      }
+      console.log(`verified — 加入失败：「${state.error}」，地址与码都还在，房间列表没变`)
     }
 
     // agent 的职责决定它怎么说话，所以它必须能改，而且要改得掉、改得回来。

@@ -347,7 +347,9 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **界面 / 宿主 / 加入方三方的协议面对得上**（这类错没有异常、没有日志，表现只是「点了没反应」） | ✅ 已验证 | `test/protocol.test.mjs` 3 用例：界面调的每个 action 宿主都有分支、界面用的每个 RPC 方法宿主都有端点、加入方敲的每个 `/lan/*` 路由宿主都在服务。把宿主的 `bot.update` 改名成 `bot.patch` 再跑，第一条当场报出来（不是空转） |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
 | 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内 / 收起成胶囊也拖得动） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 五条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900），而胶囊那条在旧代码上一步也拖不动（拖动监听跟着 `floatOpen` 一起关掉了） |
-| 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 补建 agent / 版本不一致 / 重试 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/bring-agent.png`、`docs/old-peer.png`、`docs/retry.png`、`docs/gone.png` |
+| 真实渲染（面板 / 邀请 / 加入失败 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 补建 agent / 版本不一致 / 重试 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/join-error.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/bring-agent.png`、`docs/old-peer.png`、`docs/retry.png`、`docs/gone.png` |
+| **加入失败时界面说人话**（地址写错 / 那台没开 / 码不对，是第二台机器最常撞上的状态） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'join-error'`：真去连一个「刚占过又放掉」的端口 → 断言横幅写清「连不上 127.0.0.1:54938（对面那台没在监听这个端口）」、不含 `fetch failed` / 内部错误码，填过的地址与房间码仍在表单里、按钮还在（不用从零重敲），房间列表没多出半间屋子。见 `docs/join-error.png`；单测 `test/lan.test.mjs` 另有一条断言同样的文案（旧代码会输出 `连不上 http://127.0.0.1:PORT/lan/join（fetch failed）。`） |
+| **没回上来的那条消息不该被页面级横幅的样式带脏** | ✅ 已验证 | 失败的占位行用的是 `.cr-msg.cr-error`，页面级错误横幅原来也叫 `.cr-error` —— 两个类名撞在一起，横幅的底色与 16px 缩进会套到每一条失败消息上（旧 `docs/retry.png` 里行首内缩、署名被染红）。横幅改名 `.cr-error-bar` 后重出 `docs/retry.png`，与旧图比 15258 像素、峰值 238/255 的差异就是这一处修复 |
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
 | **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `git clone --depth 1` 到空目录 → `npm install` → `npm test` 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
@@ -375,7 +377,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 重连退避 + LAN 抗坏包 + 端口被占 + 邀请地址排序 + 代码指纹 + 协议面 + 客户端装载 + 包清单（71 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 重连退避 + 连不上的文案 + LAN 抗坏包 + 端口被占 + 邀请地址排序 + 代码指纹 + 协议面 + 客户端装载 + 包清单（72 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

@@ -94,6 +94,44 @@ function unwrap(payload) {
   throw Object.assign(new Error(error.message || 'LAN 请求没成功'), { code: error.code || 'lan_failed' })
 }
 
+/**
+ * `fetch` 把真正的原因藏在 `cause` 里：连一个没人监听的端口时，它是一个 AggregateError，
+ * `code` 在 `errors[0]` 里。只读 `error.message` 得到的是一句 `fetch failed` ——
+ * 对用户等于没说，所以这里把常见的几种翻成人话，其余原样带上 code。
+ */
+const REASONS = {
+  ECONNREFUSED: '对面那台没在监听这个端口',
+  ECONNRESET: '连接被对面断掉了',
+  EHOSTUNREACH: '网络到不了那台机器',
+  ENETUNREACH: '网络到不了那台机器',
+  ENOTFOUND: '这个地址查不到',
+  EAI_AGAIN: '这个地址暂时解析不出来',
+  ETIMEDOUT: '连接超时了',
+  EPIPE: '连接断了',
+  UND_ERR_CONNECT_TIMEOUT: '连接超时了',
+  UND_ERR_SOCKET: '连接中途断了',
+}
+
+function reasonOf(error) {
+  const seen = new Set()
+  let node = error
+  while (node && typeof node === 'object' && !seen.has(node)) {
+    seen.add(node)
+    if (typeof node.code === 'string' && node.code) return REASONS[node.code] ?? node.code
+    if (Array.isArray(node.errors)) {
+      const inner = node.errors.find((row) => row && typeof row.code === 'string' && row.code)
+      if (inner) return REASONS[inner.code] ?? inner.code
+    }
+    // 没有 code 的时候 `cause.message` 往往还有信息（例如端口被 undici 拦掉时的 `bad port`）；
+    // 但 `fetch failed` 本身等于没说，不用它。
+    if (node !== error && typeof node.message === 'string' && node.message && node.message !== 'fetch failed') {
+      return node.message
+    }
+    node = node.cause
+  }
+  return null
+}
+
 async function request(url, { method = 'GET', body, timeoutMs = 20_000, signal } = {}) {
   const init = { method, headers: {} }
   if (body !== undefined) {
@@ -109,7 +147,10 @@ async function request(url, { method = 'GET', body, timeoutMs = 20_000, signal }
     if (error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR') {
       fail('lan_timeout', '对方的机器没有按时回应。')
     }
-    fail('lan_unreachable', `连不上 ${url}（${String(error?.cause?.code ?? error?.message ?? error)}）。`)
+    // 报给用户看的是「哪台、为什么」，不是内部端点路径：写全 URL 会把人带到 /lan/join 上。
+    const target = new URL(url)
+    const reason = reasonOf(error)
+    fail('lan_unreachable', `连不上 ${target.host}${reason ? `（${reason}）` : ''}。`)
   }
   // 老版本没有这个端点：404 归成「对方插件版本太旧」，上层才能说清原因，
   // 而不是报一句笼统的 lan_bad_response。

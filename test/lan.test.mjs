@@ -602,6 +602,33 @@ test('进屋之后再改名：宿主那边的成员当场换名字，不会被�
   }
 })
 
+test('连不上的时候要说清「哪台、为什么」，不能只丢一句 fetch failed', async () => {
+  // 加入失败是人最常撞上的一条路（地址写错、对面没开、码不对），报错的质量就是产品本身。
+  // Node 的 fetch 把真正的原因放在 cause 里，直接取 message 会得到 'fetch failed'。
+  // 端口用一个「刚占过又放掉」的号：确定没人监听，且不像 1 号端口那样被 undici 直接拦掉。
+  const probe = createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const closedPort = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+
+  const guest = await boot('guest-unreachable')
+  try {
+    const result = await call(guest.routes, 'command', {
+      action: 'lan.join',
+      input: { host: `127.0.0.1:${closedPort}`, code: 'ZZZZZZ' },
+    })
+    assert.equal(result.ok, false, '连不上不该当成功')
+    assert.equal(result.error.code, 'lan_unreachable')
+    const message = String(result.error.message ?? '')
+    assert.match(message, new RegExp(`连不上 127\\.0\\.0\\.1:${closedPort}`), `要写清是哪台：${message}`)
+    assert.match(message, /没在监听这个端口/, `要说清为什么：${message}`)
+    assert.doesNotMatch(message, /fetch failed/, `不能把底层消息直接丢给用户：${message}`)
+    assert.doesNotMatch(message, /\/lan\/join/, `报错里不该出现内部端点：${message}`)
+  } finally {
+    await guest.dispose()
+  }
+})
+
 test('跑着的宿主会清掉真的关掉的机器，但不会清正在长轮询的那台', async () => {
   // 把 idle 压到 400ms：测试要量的是「清扫逻辑」，不是等 45 秒。
   process.env.DSH_CHATROOM_PEER_IDLE = '400'
