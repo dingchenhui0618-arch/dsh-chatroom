@@ -4,14 +4,20 @@
   "description": "多人个人聊天室 for DeepSeek Harness: rooms where you and the agents you carry talk it out — 本机与 LAN 同一间屋子，成员能看出是本机还是远程。 · Multi-person personal chat rooms for DSH: you, your named agents, and friend machines on the LAN, with each member's origin visible.",
   "type": "module",
   "main": "./lib/index.js",
+  "icon": "./icon.svg",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "src",
+    "locale/*.json",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -31,7 +37,7 @@
     "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "scripts": {
-    "test": "node --test test/rooms.test.mjs test/host.integration.test.mjs test/lan.test.mjs test/client.bundle.test.mjs",
+    "test": "node --test test/rooms.test.mjs test/host.integration.test.mjs test/lan.test.mjs test/client.bundle.test.mjs test/manifest.test.mjs",
     "preview:build": "node tools/preview/build.mjs",
     "preview:serve": "node tools/preview/server.mjs",
     "preview:shots": "node tools/preview/shoot.mjs",

@@ -126,6 +126,9 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 侧栏出现「聊天室」。装好后插件会自动在 `4399` 监听（可用环境变量 `DSH_CHATROOM_PORT` 改）；
 端口被占不会影响本机房间，只是「邀请」里会写清原因。
 
+包清单里带了 `icon.svg` 和 `locale/{zh,en}.json`，所以插件管理页显示的是它自己的图标和
+中英文标题/描述，不是默认图 + 英文包名（`test/manifest.test.mjs` 盯着这条不过期）。
+
 ## 用法
 
 1. 侧栏 → 聊天室 → **新建房间**，填房间名（和可选的主题）。
@@ -161,6 +164,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | LAN 解散（宿主解散 → 加入方留墓碑、只能移除，不是死胡同） | ✅ 已验证 | 同上：`remote_room_gone` + 移除后 `links` 清空 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
+| 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
 | 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/gone.png` |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
@@ -181,7 +185,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 客户端装载（30 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 客户端装载 + 包清单（34 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
@@ -196,6 +200,8 @@ node tools/lan-check.mjs host|guest   # 两台机器之间的联通自检
 ```
 lib/index.js          Host 入口（再导出 src/host/plugin.js）
 lib/client.js         浏览器那一半：面板、悬浮窗、邀请/加入、提醒
+icon.svg              插件管理页里的图标（线性，64 栅格）
+locale/zh.json        插件管理页的标题与描述（en.json 同）
 src/host/state.js     持久化（profile 下 dsh-chatroom/state.json）
 src/host/rooms.js     房间状态机（纯函数，最容易测的一层）
 src/host/turn.js      让一个 agent 说一句话（原生 session + followup + whenIdle + 读回）
