@@ -199,6 +199,52 @@ test('建房间 → 加 agent → 人发言 @ 它 → agent 真的被驱动并�
   }
 })
 
+test('agent 的名字和职责能改：改的是同一个 agent，两间屋子一起换，@ 认新名字、职责进 prompt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  const { ctx, routes, prompts } = fakeCtx(dir)
+  const dispose = await apply(ctx)
+  try {
+    const first = await call(routes, 'command', { action: 'room.create', input: { name: '对账屋' } })
+    const roomId = first.value.rooms[0].id
+    await call(routes, 'command', { action: 'member.createBot', input: { roomId, name: 'Claude', role: '' } })
+    // 同一个 agent 再进第二间屋子：名字与职责属于 agent 本身，改一次两边都该跟着换。
+    const second = await call(routes, 'command', { action: 'room.create', input: { name: '复盘屋' } })
+    const secondRoomId = second.value.rooms.find((room) => room.id !== roomId).id
+    const botId = (await call(routes, 'snapshot', {})).value.bots[0].id
+    await call(routes, 'command', { action: 'member.addBot', input: { roomId: secondRoomId, botId } })
+
+    const updated = await call(routes, 'command', {
+      action: 'bot.update',
+      input: { botId, name: '账期 agent', role: '盯 45 天账期与返点' },
+    })
+    assert.equal(updated.ok, true, JSON.stringify(updated.error))
+
+    const snap = (await call(routes, 'snapshot', {})).value
+    assert.equal(snap.bots.length, 1, '改名不该凭空多出一个 agent')
+    assert.equal(snap.bots[0].name, '账期 agent')
+    assert.equal(snap.bots[0].role, '盯 45 天账期与返点')
+    for (const room of snap.rooms) {
+      const member = room.members.find((row) => row.botId === botId)
+      assert.ok(member, `${room.name} 里应该还有这个 agent`)
+      assert.equal(member.name, '账期 agent')
+      assert.equal(member.role, '盯 45 天账期与返点')
+    }
+
+    // 名字换了，@ 就得认新名字；职责也要真的进 prompt（它决定这个 agent 怎么说话）。
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@账期 agent 这周的数出来了吗？' } })
+    await tick(200)
+    assert.equal(prompts.length, 1, '新名字应该能 @ 到它')
+    assert.match(prompts[0].text, /你的职责：盯 45 天账期与返点/)
+
+    // 旧名字不该还能触发：认的是成员当前的名字，不是历史署名。
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@Claude 你还记得吗？' } })
+    await tick(200)
+    assert.equal(prompts.length, 1, '旧名字不该再驱动这个 agent')
+  } finally {
+    await dispose()
+  }
+})
+
 test('没被 @ 也没开全员轮次时，agent 不发言（不白烧模型调用）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
   const { ctx, routes, prompts } = fakeCtx(dir)

@@ -27,13 +27,23 @@ const CHROME = [
 
 if (!CHROME) throw new Error('找不到 Chrome 可执行文件')
 
+// 一张截图可以带多条断言：面板那张既要验「看了就算已读」，也要验「agent 的职责能改」。
+const wants = (shot, name) => (Array.isArray(shot.verify) ? shot.verify.includes(name) : shot.verify === name)
+
 const shots = [
   {
     name: 'panel',
     view: 'panel',
     waitFor: '.cr-msg',
-    verify: 'panel-read',
+    verify: ['panel-read', 'agent-edit'],
     caption: '房间面板：房间列表 / 群聊 / 成员与规则入口；从 LAN 加入的人和他的 agent 带远程 chip',
+  },
+  {
+    name: 'agent-edit',
+    view: 'panel',
+    waitFor: '.cr-msg',
+    open: '改',
+    caption: 'agent 的名字与职责随时可改：职责决定它怎么说话，所以建完之后还得能接着改',
   },
   {
     name: 'invite',
@@ -55,6 +65,7 @@ const shots = [
     port: guestPort,
     view: 'panel',
     waitFor: '.cr-msg',
+    settle: 'read',
     caption: '同一间屋子，加入那台机器看到的视角：自己的人是本机，宿主的成员标 LAN · 由 <机器名> 主持',
   },
   {
@@ -298,7 +309,7 @@ try {
 
     // 反面：面板就摆在眼前时，新消息应该直接算已读（用户已经看到了）。
     // 和上面那条一起，才说明「该提醒时提醒、看过了就消」两半都在。
-    if (shot.verify === 'panel-read') {
+    if (wants(shot, 'panel-read')) {
       await fetch(`http://127.0.0.1:${shot.port ?? port}/preview/nudge`)
       let cleared = false
       for (let i = 0; i < 40; i += 1) {
@@ -317,10 +328,81 @@ try {
       console.log('verified — 面板可见时新消息直接算已读（未读不会涨）')
     }
 
+    // agent 的职责决定它怎么说话，所以它必须能改，而且要改得掉、改得回来。
+    // 这条走真实渲染 + 真实命令：点成员行的「改」→ 表单原地展开 → 改职责 → 保存 →
+    // 成员列上的职责当场换掉；再改回原值，别把后面的截图带脏。
+    if (wants(shot, 'agent-edit')) {
+      const roleOf = (name) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const row = [...document.querySelectorAll('.cr-member')]
+              .find((el) => (el.querySelector('.cr-member-name') || {}).textContent === ${JSON.stringify(name)})
+            if (!row) return null
+            const role = row.querySelector('.cr-member-role')
+            return role ? role.textContent : null
+          })()`,
+        )
+      const openEditor = (name) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const row = [...document.querySelectorAll('.cr-member')]
+              .find((el) => (el.querySelector('.cr-member-name') || {}).textContent === ${JSON.stringify(name)})
+            if (!row) return false
+            const button = [...row.querySelectorAll('.cr-icon-btn')].find((el) => el.textContent.trim() === '改')
+            if (!button) return false
+            button.click()
+            return true
+          })()`,
+        )
+      const setRole = (value) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const input = [...document.querySelectorAll('.cr-agent-form input')]
+              .find((el) => (el.getAttribute('aria-label') || '').startsWith('职责'))
+            if (!input) return false
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+            setter.call(input, ${JSON.stringify(value)})
+            input.dispatchEvent(new Event('input', { bubbles: true }))
+            const save = [...document.querySelectorAll('.cr-agent-form button')].find((el) => el.textContent.trim() === '保存')
+            if (!save) return false
+            save.click()
+            return true
+          })()`,
+        )
+      const waitRole = async (name, expected) => {
+        for (let i = 0; i < 60; i += 1) {
+          if ((await roleOf(name)) === expected) return true
+          await sleep(100)
+        }
+        return false
+      }
+
+      const original = await roleOf('账期 agent')
+      if (!original) throw new Error('成员列里找不到「账期 agent」，这条断言没法成立')
+      if (!(await openEditor('账期 agent'))) throw new Error('点不开 agent 的「改」')
+      const changed = '盯 45 天账期、返点与对账单'
+      if (!(await setRole(changed))) throw new Error('agent 表单里改不了职责')
+      if (!(await waitRole('账期 agent', changed))) {
+        throw new Error(`改完职责成员列没跟着换：${await roleOf('账期 agent')}`)
+      }
+      if (!(await openEditor('账期 agent'))) throw new Error('第二次点不开 agent 的「改」')
+      if (!(await setRole(original))) throw new Error('agent 表单里改不回原职责')
+      if (!(await waitRole('账期 agent', original))) {
+        throw new Error(`职责没改回去，后面的截图会带着脏状态：${await roleOf('账期 agent')}`)
+      }
+      console.log('verified — agent 的职责可改：表单原地展开，成员列当场换，再改回来')
+    }
+
     // 名字是身份的一部分：输入框里必须是坐在键盘前的这个人，改完要真的落到宿主
     // （成员列换成新名字），再改回去，别把后面的截图带脏。
     // 断言只认成员列，不认输入框：输入框里还有你正在打的草稿，看它等于什么都没证明。
-    if (shot.verify === 'name-edit') {
+    if (wants(shot, 'name-edit')) {
       const memberNames = () =>
         evaluate(
           cdp,
@@ -379,7 +461,7 @@ try {
 
     // 截图只证明「出现了未读」，还得证明它「会消」：展开浮窗就等于看过了，
     // 徽标和标题前缀都该归零。这条断言跑在真实渲染的页面里，和截图同一份代码。
-    if (shot.verify === 'read') {
+    if (wants(shot, 'read')) {
       // 先确认「该有未读」：没有未读的截图证明不了提醒链路，后一步的清零也就成了空跑。
       const before = await evaluate(
         cdp,
@@ -415,7 +497,7 @@ try {
     }
     // 三台机器同屋：两台远程机器不能都只显示一个「LAN」——
     // 认不出是哪台机器，用户就会把两台机器的人和 agent 搞混。这条断言跑在真实渲染的页面上。
-    if (shot.verify === 'three-parties') {
+    if (wants(shot, 'three-parties')) {
       const state = await evaluate(
         cdp,
         sessionId,
@@ -457,7 +539,7 @@ try {
     }
     // 浮窗既然能拖到任何地方，就得证明它拖不丢：记住的坐标要真的用上、越界的坐标要夹回、
     // 拖到屏幕外要夹住、窗口变窄以后还得在视口里。四条都跑在真实渲染的页面里。
-    if (shot.verify === 'float-bounds') {
+    if (wants(shot, 'float-bounds')) {
       const openCard = async () => {
         await waitForSelector(cdp, sessionId, '.cr-float-pill')
         await evaluate(cdp, sessionId, `(() => {
