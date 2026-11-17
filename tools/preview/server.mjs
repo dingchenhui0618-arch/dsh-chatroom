@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootFixture, bootGuest, warmUp } from './fixture.mjs'
+import { bootFixture, bootGuest, joinThirdMachine, warmUp } from './fixture.mjs'
 
 /**
  * 截图用的最小服务器：静态文件 + 三个和线上同形的端点。
@@ -34,6 +34,13 @@ try {
 }
 const guest = await bootGuest({ port: host.lanPort, code: host.code })
 await warmUp(host, guest)
+// 第三台机器按需加入：前七张截图拍的是「两台机器」的样子，多一台会改掉它们的内容。
+let third = null
+async function joinThird() {
+  if (third) return third
+  third = await joinThirdMachine(host)
+  return third
+}
 console.log(`preview host room ${host.code} on LAN port ${host.lanPort}`)
 
 const MIME = {
@@ -100,7 +107,16 @@ function serve(side, port, { nudge = null } = {}) {
 
       if (url.pathname === '/preview/writes') {
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ writes: usage.writes, roomCode: host.code, lanPort: host.lanPort }))
+        res.end(JSON.stringify({ writes: usage.writes, roomCode: host.code, lanPort: host.lanPort, third: Boolean(third) }))
+        return
+      }
+
+      // 让第三台机器真的加入（真握手、真派发）：这张截图要证明界面分得清「哪一台机器」。
+      if (url.pathname === '/preview/third') {
+        usage.writes += 1
+        await joinThird()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
         return
       }
 

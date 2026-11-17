@@ -74,6 +74,14 @@ const shots = [
     caption: '新消息提醒：折叠胶囊上的未读数 + 右上角 toast，标题栏前缀同步',
   },
   {
+    name: 'three-machines',
+    view: 'panel',
+    setup: '/preview/third',
+    waitFor: '.cr-msg',
+    verify: 'three-parties',
+    caption: '三台机器同屋：本机 + 两台 LAN 机器各带自己的 agent，成员与消息都按机器名区分',
+  },
+  {
     name: 'gone',
     port: guestPort,
     view: 'panel',
@@ -328,6 +336,48 @@ try {
       }
       if (!cleared) throw new Error('展开浮窗后未读没有清零')
       console.log('verified — 展开浮窗后未读归零（徽标与标题前缀都落回去）')
+    }
+    // 三台机器同屋：两台远程机器不能都只显示一个「LAN」——
+    // 认不出是哪台机器，用户就会把两台机器的人和 agent 搞混。这条断言跑在真实渲染的页面上。
+    if (shot.verify === 'three-parties') {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          const rows = [...document.querySelectorAll('.cr-msg')].map((row) => ({
+            name: text(row.querySelector('.cr-msg-name')).replace(/（.*?）/g, '').trim(),
+            chip: text(row.querySelector('.cr-msg-meta .cr-chip.cr-lan')),
+          }))
+          const members = [...document.querySelectorAll('.cr-member-name')].map(text)
+          return { rows, members }
+        })()`,
+      )
+      const wantMembers = ['林岸', '账期 agent', '退货 agent', '周荻', '尾货 agent', '陈默', '库存 agent']
+      const missing = wantMembers.filter((name) => !state.members.includes(name))
+      if (missing.length) throw new Error(`成员列少了：${missing.join('、')}（实际 ${state.members.join('、')}）`)
+
+      const byMachine = {
+        '周荻的 MacBook': ['周荻', '尾货 agent'],
+        '陈默的 ThinkPad': ['陈默', '库存 agent'],
+      }
+      for (const [machine, authors] of Object.entries(byMachine)) {
+        for (const author of authors) {
+          const row = state.rows.find((item) => item.name === author)
+          if (!row) throw new Error(`消息行里没有 ${author} 的发言，这条验不了跨机器来源`)
+          if (!row.chip.includes(machine)) {
+            throw new Error(`${author} 的消息没有标出它来自「${machine}」，实际 chip：${JSON.stringify(row.chip)}`)
+          }
+        }
+      }
+      // 本机的成员不能被贴 LAN 标签（三台机器时最容易把自家的也标成远程）。
+      for (const author of ['林岸', '账期 agent', '退货 agent']) {
+        const row = state.rows.find((item) => item.name === author)
+        if (row && row.chip) throw new Error(`本机成员 ${author} 被标成了 LAN：${JSON.stringify(row.chip)}`)
+      }
+      const machines = new Set(state.rows.map((row) => row.chip).filter(Boolean))
+      if (machines.size < 2) throw new Error(`两台远程机器没有区分开：${JSON.stringify([...machines])}`)
+      console.log(`verified — 三台机器同屋：${wantMembers.length} 个成员、两台远程机器各标自己的机器名`)
     }
     // 浮窗既然能拖到任何地方，就得证明它拖不丢：记住的坐标要真的用上、越界的坐标要夹回、
     // 拖到屏幕外要夹住、窗口变窄以后还得在视口里。四条都跑在真实渲染的页面里。

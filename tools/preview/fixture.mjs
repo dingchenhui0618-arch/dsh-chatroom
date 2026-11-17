@@ -220,12 +220,18 @@ export async function bootFixture({ port } = {}) {
  * 加入者：另一台机器。它先有自己的房间与 agent，再按房间码加入宿主的屋子。
  * 之后两边都在线 —— 截图里的远程成员、跨机派发都来自这条真实链路。
  */
-export async function bootGuest({ host = '127.0.0.1', port, code, name = '周荻', botName = '尾货 agent', machine = '周荻的 MacBook' }) {
+export async function bootGuest({
+  host = '127.0.0.1',
+  port,
+  code,
+  name = '周荻',
+  botName = '尾货 agent',
+  machine = '周荻的 MacBook',
+  role = '拆尾货与退货结构',
+  reply = '尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。',
+}) {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-guest-'))
-  const side = await bootSide({
-    dir,
-    reply: '尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。',
-  })
+  const side = await bootSide({ dir, reply })
   await side.command({ action: 'self.rename', input: { name } })
   const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
   // 同宿主那边：房间码也钉死，加入方视角的截图才不会每次都不一样。
@@ -235,7 +241,7 @@ export async function bootGuest({ host = '127.0.0.1', port, code, name = '周荻
   })
   await side.command({
     action: 'member.createBot',
-    input: { roomId: local.rooms[0].id, name: botName, role: '拆尾货与退货结构' },
+    input: { roomId: local.rooms[0].id, name: botName, role },
   })
   await side.command({
     action: 'lan.join',
@@ -268,4 +274,44 @@ export async function warmUp(host, guest) {
   pinTimes(host.store)
   pinTimes(guest.store)
   return { mirror }
+}
+
+/**
+ * 第三台机器进屋。
+ *
+ * 两台机器时「本机 / 远程」两分就够了；三台才需要界面证明它分得清**是哪一台**远程。
+ * 所以这张截图里第三台机器是真人加入的：真握手、真发言、真派发。
+ */
+export async function joinThirdMachine(
+  host,
+  { name = '陈默', botName = '库存 agent', machine = '陈默的 ThinkPad', role = '盯尾货库存与清仓节奏' } = {},
+) {
+  const third = await bootGuest({
+    port: host.lanPort,
+    code: host.code,
+    name,
+    botName,
+    machine,
+    role,
+    reply: '1.2 万件里 7 千件能在 11/11 前清掉，剩下的转明年春季，退货成本压回 15 万。',
+  })
+  const mirror = third.snapshot().rooms.find((room) => room.remote)
+  if (!mirror) throw new Error('第三台机器没有镜像房间')
+  await third.command({
+    action: 'msg.send',
+    input: { roomId: mirror.id, text: '我这边把尾货库存过了一遍：三个款合计 1.2 万件。' },
+  })
+  await host.command({
+    action: 'msg.send',
+    input: { roomId: host.roomId, text: '@库存 agent 有多少能赶上 11/11 清？' },
+  })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const room = host.store.state.rooms.find((row) => row.id === host.roomId)
+    if (room.messages.some((message) => message.authorName === botName)) break
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  pinTimes(host.store)
+  pinTimes(third.store)
+  return third
 }
