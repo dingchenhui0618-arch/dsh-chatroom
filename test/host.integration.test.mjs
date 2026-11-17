@@ -38,16 +38,19 @@ function fakeCtx(dir, { reply = DEFAULT_REPLY, gate = null } = {}) {
           .join('\n')
         prompts.push({ sessionId, text, message })
         const answer = typeof reply === 'function' ? reply(text) : reply
+        // reply 可以直接返回 { interrupted: true }：用来模拟「这一轮跑完了但没留下话」，
+        // 真实场景是用户点了「停下这一轮」。
+        const shaped = answer && typeof answer === 'object' ? answer : { text: answer }
         const list = events.get(sessionId) ?? []
         list.push({
           seq: list.length + 1,
           type: 'assistant/message',
           data: {
-            interrupted: false,
+            interrupted: shaped.interrupted === true,
             message: {
               id: 'a' + (list.length + 1),
               role: 'assistant',
-              content: [{ type: 'text', text: answer }],
+              content: shaped.text ? [{ type: 'text', text: shaped.text }] : [],
             },
           },
         })
@@ -381,6 +384,84 @@ test('正在发言时人又说了一句：这句不会被吞掉，等这一轮�
     // 一句是这一轮自己的台词（排队排在插话后面），一句是插话换来的。
     assert.equal(replied.length, 2)
     assert.equal(after.value.rooms[0].activity, null)
+  } finally {
+    await dispose()
+  }
+})
+
+test('每个 agent 有自己的原生会话：两轮之后各回各的会话，互不串台', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  // 回复里带上「这一轮是谁在说」：只要会话串了，这句就会出现在别人的会话里。
+  const { ctx, routes, prompts, events } = fakeCtx(dir, {
+    reply: (text) => `我是${speakerOf(text)}，这是我的原话。`,
+  })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '各说各的' } })
+    const roomId = created.value.rooms[0].id
+    for (const name of ['A', 'B']) {
+      await call(routes, 'command', { action: 'member.createBot', input: { roomId, name } })
+    }
+    const listed = (await call(routes, 'snapshot', {})).value
+    const bots = listed.rooms[0].members.filter((member) => member.kind === 'bot')
+    const sessionOf = Object.fromEntries(bots.map((member) => [member.name, member.sessionId]))
+    assert.ok(sessionOf.A && sessionOf.B, '每个 agent 都该有自己的 sessionId')
+    assert.notEqual(sessionOf.A, sessionOf.B, '两个 agent 不能共用一个原生会话')
+
+    await call(routes, 'command', { action: 'room.update', input: { roomId, rules: { roundRobin: true } } })
+    // 连着两轮全员发言：同一个 agent 第二次开口必须回到它自己那个会话上。
+    for (const text of ['第一轮', '第二轮']) {
+      await call(routes, 'command', { action: 'msg.send', input: { roomId, text } })
+      await call(routes, 'command', { action: 'round.run', input: { roomId } })
+      await tick(250)
+    }
+
+    assert.equal(prompts.length, 4, `两轮各两个人，应该驱动四次，实际 ${prompts.length} 次`)
+    for (const [name, sessionId] of Object.entries(sessionOf)) {
+      const driven = prompts.filter((prompt) => speakerOf(prompt.text) === name)
+      assert.equal(driven.length, 2, `${name} 应该被驱动两次`)
+      assert.deepEqual(
+        driven.map((prompt) => prompt.sessionId),
+        [sessionId, sessionId],
+        `${name} 的两轮必须落在同一个原生会话里`,
+      )
+      // 记忆就是会话历史：它那个会话里只该有它自己说过的话。
+      const own = events.get(sessionId) ?? []
+      assert.equal(own.length, 2, `${name} 的会话里应该正好两句`)
+      for (const event of own) {
+        const said = event.data.message.content.map((block) => block.text).join('')
+        assert.match(said, new RegExp(`我是${name}，`), `${name} 的会话里不该出现别人的话：${said}`)
+      }
+    }
+  } finally {
+    await dispose()
+  }
+})
+
+test('这一轮没留下话（被中断）时，不会把上一条再当成新话发一遍', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  const { ctx, routes } = fakeCtx(dir, {
+    reply: (text) => (text.includes('第二句') ? { interrupted: true } : '第一句的回答：数字对得上。'),
+  })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '说到一半停下' } })
+    const roomId = created.value.rooms[0].id
+    await call(routes, 'command', { action: 'member.createBot', input: { roomId, name: 'A' } })
+
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 第一句' } })
+    await tick(200)
+    let room = (await call(routes, 'snapshot', {})).value.rooms[0]
+    assert.equal(room.messages.length, 2, '第一轮应该有问有答')
+
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 第二句' } })
+    await tick(250)
+    room = (await call(routes, 'snapshot', {})).value.rooms[0]
+
+    const repeated = room.messages.filter((message) => message.text.includes('第一句的回答'))
+    assert.equal(repeated.length, 1, `上一句不该再发一遍，实际出现 ${repeated.length} 次`)
+    assert.equal(room.messages.at(-1).status, 'error', '这一轮该以「没回上来」收尾，而不是假装说了句新的')
+    assert.match(room.messages.at(-1).text, /没回上来/)
   } finally {
     await dispose()
   }

@@ -41,6 +41,10 @@ const fail = (code, message) => {
 export function createBotRunner(ctx, { log = () => {} } = {}) {
   /** sessionId → agent：同一进程里复用，避免每次都 resume。 */
   const agents = new Map()
+  /** sessionId → 最近一次真正发进房间的那条回复的消息 id，用来分辨「这一轮到底有没有新话」。 */
+  const posted = new Map()
+
+  const idOf = (reply) => reply?.data?.message?.id ?? null
 
   function requireService(key) {
     const service = ctx.get?.(key) ?? ctx[key]
@@ -109,11 +113,33 @@ export function createBotRunner(ctx, { log = () => {} } = {}) {
   }
 
   /**
+   * 这个会话里「上一次真正发进房间的那句话」是谁。
+   *
+   * 读回的最后一句未必属于这一轮：用户点了「停下这一轮」、或者模型这一轮只调了工具
+   * 没出文本时，会话里没有新台词，`replyOf` 拿到的还是上一轮那句。不知道基线的话，
+   * 那句旧台词就会被当成新话再发一遍——房间里凭空多出一条重复消息，还白占一次发言预算。
+   */
+  async function baselineOf(sessionId) {
+    if (posted.has(sessionId)) return posted.get(sessionId)
+    // 第一次接上这个会话（含进程重启后）：先把已有的最后一句记成基线。
+    let id = null
+    try {
+      id = idOf((await readReply(sessionId)).reply)
+    } catch (error) {
+      // 新建的会话还没有落盘文件：本来就没有上一句。
+      log('reply_baseline_missed', error)
+    }
+    posted.set(sessionId, id)
+    return id
+  }
+
+  /**
    * 让一个 Bot 说一句话。
    * @returns {Promise<{text: string, sessionId: string}>}
    */
   async function say(bot, prompt, { signal } = {}) {
     const agent = await ensureAgent(bot)
+    const baseline = await baselineOf(bot.sessionId)
     const message = userMessage({
       content: [{ type: 'text', text: prompt }],
       source: { kind: 'dsh-chatroom', botId: bot.id, sessionId: bot.sessionId },
@@ -135,6 +161,11 @@ export function createBotRunner(ctx, { log = () => {} } = {}) {
       const after = agent.session?.seq ?? 0
       fail('empty_reply', after === before ? '模型这一轮没有产生任何事件。' : '这一轮没有可用的文本回复。')
     }
+    const replyId = idOf(reply)
+    if (replyId !== null && replyId === baseline) {
+      fail('empty_reply', '这一轮没有新的话（被中断或只做了工具调用），不把上一句再发一遍。')
+    }
+    posted.set(bot.sessionId, replyId)
     return { text, sessionId: bot.sessionId }
   }
 
