@@ -438,6 +438,9 @@ try {
           const flow = document.querySelector('.cr-flow')
           if (!flow) return false
           flow.scrollTop = 0
+          // 滚到顶上之后，「回到最新」才会出现（scroll 事件异步派发，这里补一次，
+          // 免得拍出来的图里没这个出口、断言却在断言它）。
+          flow.dispatchEvent(new Event('scroll'))
           return true
         })()`,
       )
@@ -1245,10 +1248,13 @@ try {
           `(() => {
             const flow = document.querySelector('.cr-flow')
             const button = document.querySelector('.cr-older-btn')
+            const jump = document.querySelector('.cr-jump')
             const rows = [...document.querySelectorAll('.cr-msg')]
             return {
               rows: rows.length,
               button: button ? String(button.textContent).trim() : null,
+              jump: jump ? String(jump.textContent).trim() : null,
+              gap: flow ? Math.round(flow.scrollHeight - flow.scrollTop - flow.clientHeight) : null,
               first: rows.length ? String(rows[0].querySelector('.cr-msg-text').textContent).trim() : '',
               last: rows.length ? String(rows[rows.length - 1].querySelector('.cr-msg-text').textContent).trim() : '',
               scrollTop: flow ? Math.round(flow.scrollTop) : null,
@@ -1275,7 +1281,23 @@ try {
       if (!/11\/01/.test(after.first)) throw new Error(`翻到的不是最早那句：${after.first}`)
       if (!/11\/24/.test(after.last)) throw new Error(`最新那句不该被翻页换掉：${after.last}`)
       if (!(after.scrollTop > 0)) throw new Error('翻完视口被跳回顶部：用户读的那句会掉下去')
+      if (!after.jump || !/回到最新/.test(after.jump)) {
+        throw new Error(`翻到上头之后没有回到最新的出口：${after.jump}`)
+      }
       console.log(`verified — 点一下真翻回最早那 40 句（${after.rows} 条，首句「${after.first}」），入口自己消失`)
+
+      // 往上翻完人停在顶上，最新那句在几百行之外：出口得真把人送回去。
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-jump').click()`)
+      let back = null
+      for (let i = 0; i < 30; i += 1) {
+        back = await readTimeline()
+        if (back.jump === null) break
+        await sleep(100)
+      }
+      if (back.jump !== null) throw new Error('点了「回到最新」，出口还挂在上面')
+      if (!(back.gap <= 2)) throw new Error(`点了「回到最新」却没到底：还差 ${back.gap}px`)
+      if (back.rows !== after.rows) throw new Error('回到最新不该丢掉翻出来的历史')
+      console.log(`verified — 「回到最新」一步回到这句（离底部 ${back.gap}px，${back.rows} 条仍在）`)
     }
     await cdp.send('Target.closeTarget', { targetId })
   }
