@@ -188,10 +188,19 @@ async function bootSide({ dir, reply, port }) {
 /** 宿主：本机房间 + 两个本地 agent，然后等另一台机器加入。 */
 export async function bootFixture({ port } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-preview-'))
+  // 假模型可以被点名挂一次：「agent 没回上来」那一屏要的是真实失败路径，
+  // 不是给页面塞一条假消息。挂完自动恢复，重试才有的可重。
+  const model = { failNext: false }
   const side = await bootSide({
     dir,
     port,
-    reply: '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。',
+    reply: () => {
+      if (model.failNext) {
+        model.failNext = false
+        throw Object.assign(new Error('模型这一轮挂了'), { code: 'model_failed' })
+      }
+      return '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。'
+    },
   })
   const room = seedHost(side.store)
   pinTimes(side.store)
@@ -210,6 +219,41 @@ export async function bootFixture({ port } = {}) {
         target.messages = target.messages.filter((message) => message.text !== text)
         postMessage(draft, { roomId: target.id, authorId: 'm_bot_cashflow', text })
       })
+      pinTimes(side.store)
+      return side.snapshot()
+    },
+    /**
+     * 截「重试」用：让本机的「账期 agent」真失败一轮。
+     * 单独开一间屋子演这张图：失败那一屏不该把主线房间的历史带脏，
+     * 后面「三台机器同屋 / 解散」还要用那间屋子的干净状态。
+     * 走的是和人一模一样的路径 —— 人发一句 @ 它的话，它的回合就挂了，
+     * 占位消息由 speak.js 自己落下，界面上的「重试」再把这一轮单独重跑。
+     */
+    async failOnce() {
+      const created = await side.command({
+        action: 'room.create',
+        input: { name: '对账会', topic: '把缺口口径对一遍' },
+      })
+      const target = created.rooms.find((row) => row.name === '对账会')
+      if (!target) throw new Error('没能开出「对账会」这间屋子')
+      side.store.commit((draft) => {
+        const fresh = draft.rooms.find((row) => row.id === target.id)
+        if (fresh) fresh.code = 'R3W8YN'
+      })
+      await side.command({
+        action: 'member.createBot',
+        input: { roomId: target.id, name: '账期 agent', role: '盯应付账期与现金流缺口' },
+      })
+      model.failNext = true
+      await side.command({
+        action: 'msg.send',
+        input: { roomId: target.id, text: '@账期 agent 缺口按哪天的账期算的？' },
+      })
+      for (let i = 0; i < 60; i += 1) {
+        const fresh = side.snapshot().rooms.find((row) => row.id === target.id)
+        if (fresh && fresh.messages.some((message) => message.status === 'error')) break
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
       pinTimes(side.store)
       return side.snapshot()
     },

@@ -128,6 +128,15 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 截图用：让宿主这边的 agent 真失败一轮，好去截「没回上来 + 重试」那一屏。
+      if (nudge && url.pathname === '/preview/fail') {
+        usage.writes += 1
+        const view = await host.failOnce()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, rooms: view.rooms.length }))
+        return
+      }
+
       // 截图用：让宿主真的把那间屋子解散，好去截加入方那边的「墓碑」状态。
       // 走的是插件自己的 command，不是给页面塞假数据。
       if (nudge && url.pathname === '/preview/dissolve') {

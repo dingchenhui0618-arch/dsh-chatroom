@@ -95,6 +95,15 @@ const shots = [
     caption: '三台机器同屋：本机 + 两台 LAN 机器各带自己的 agent，成员与消息都按机器名区分',
   },
   {
+    name: 'retry',
+    view: 'panel',
+    setup: '/preview/fail',
+    waitFor: '.cr-msg-actions',
+    settle: 'read',
+    verify: 'retry',
+    caption: 'agent 没回上来时：占位消息留在房里，底下一个「重试」只重跑它一个，不惊动别人',
+  },
+  {
     name: 'gone',
     port: guestPort,
     view: 'panel',
@@ -662,6 +671,57 @@ try {
       )
       await evaluate(cdp, sessionId, `localStorage.removeItem('dsh-chatroom:float-pos:v1')`)
       console.log('verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内、收起成胶囊也拖得动')
+    }
+
+    // 「没回上来」不能只是一行灰字：得有入口把那一个 agent 单独重跑一次。
+    // 这条走真实渲染 + 真实命令：点「重试」→ 客户端发 msg.retry → 宿主只重跑它一个 → 回复落库。
+    if (wants(shot, 'retry')) {
+      const before = await evaluate(cdp, sessionId, `(() => {
+        const rows = [...document.querySelectorAll('.cr-msg')]
+        const failed = rows.find((row) => row.classList.contains('cr-error'))
+        if (!failed) return null
+        const buttons = [...failed.querySelectorAll('.cr-msg-actions button')]
+        return {
+          count: rows.length,
+          text: failed.querySelector('.cr-msg-text').textContent,
+          buttons: buttons.length,
+          label: buttons[0] ? buttons[0].textContent.trim() : null,
+          disabled: buttons[0] ? buttons[0].disabled : null,
+        }
+      })()`)
+      if (!before) throw new Error('这一屏里没有「没回上来」那条')
+      if (!/没回上来/.test(before.text)) throw new Error(`失败占位的内容不对：${before.text}`)
+      if (before.buttons !== 1) throw new Error(`失败那条该正好一个重试按钮，实际 ${before.buttons} 个`)
+      if (before.label !== '重试') throw new Error(`重试按钮的文字不对：${before.label}`)
+      if (before.disabled) throw new Error('这一轮已经结束了，重试按钮不该是禁用的')
+
+      const clicked = await evaluate(cdp, sessionId, `(() => {
+        const row = [...document.querySelectorAll('.cr-msg')].find((el) => el.classList.contains('cr-error'))
+        const button = row && row.querySelector('.cr-msg-actions button')
+        if (!button) return false
+        button.click()
+        return true
+      })()`)
+      if (!clicked) throw new Error('点不到那个重试按钮')
+
+      let after = null
+      for (let i = 0; i < 60; i += 1) {
+        after = await evaluate(cdp, sessionId, `(() => {
+          const rows = [...document.querySelectorAll('.cr-msg')]
+          const last = rows[rows.length - 1]
+          return {
+            count: rows.length,
+            lastText: last ? last.querySelector('.cr-msg-text').textContent : '',
+            errorRows: rows.filter((row) => row.classList.contains('cr-error')).length,
+          }
+        })()`)
+        if (after.count > before.count && !/没回上来/.test(after.lastText)) break
+        await sleep(100)
+      }
+      if (after.count <= before.count) throw new Error('点了重试以后没有新消息进来')
+      if (after.errorRows !== 1) throw new Error(`失败占位不该被抹掉或翻倍：${after.errorRows} 条`)
+      if (!/缺口 82 万/.test(after.lastText)) throw new Error(`重试后落库的不是那个 agent 的话：${after.lastText}`)
+      console.log('verified — 失败留占位，点重试只重跑那一个 agent，回复接在后面')
     }
     await cdp.send('Target.closeTarget', { targetId })
   }

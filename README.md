@@ -19,7 +19,7 @@
 ![房间面板](docs/panel.png)
 
 **房间面板**。左：房间列表与预览，底部是「我的名字」（对面看到的就是它）和「加入 LAN 房间」的入口；
-中：群聊（`本机` / `LAN · 周荻的 MacBook` 的标记跟着消息走）；
+中：群聊（`本机` / `LAN · 周荻的 MacBook` 的标记跟着消息走），新消息进来会跟着滚到底，自己往上翻历史时不打扰；
 右：成员与规则入口；底部只在有人发言时显示谁在说，平时显示「几人 · 几个 LAN」。
 
 ![agent 的名字与职责可改](docs/agent-edit.png)
@@ -61,6 +61,14 @@
 每一条消息和每一个成员都标到**机器**，不是笼统的一个「LAN」：`LAN · 周荻的 MacBook` /
 `LAN · 陈默的 ThinkPad`，本机的成员不贴标签（不标才是本机）。这张图不是摆拍：第三个进程真的握手、真的发言，
 宿主那句 `@库存 agent 有多少能赶上 11/11 清？` 也是真的被派发到第三台机器上跑完再回传的。
+
+![agent 没回上来时可以只重试它一个](docs/retry.png)
+
+**agent 没回上来**：失败不会悄悄消失 —— 占位消息留在房里（带错误码，灰色的那行），
+底下一个「重试」只把**它**重跑一次：不惊动屋里其他 agent、也不换会话，回复按 seq 接在后面，
+所以失败的痕迹和成功的回复都在。这一轮还在发言时按钮是按住的（宿主会拿 `room_busy` 挡住）；
+加入方的镜像是只读的，重试只在宿主那台机器上发起。
+这张图也是真的：假模型被点名挂了一次，占位消息由 `speak.js` 自己落下，断言里再点一次「重试」，等新回复落库。
 
 ![宿主解散后的加入方](docs/gone.png)
 
@@ -216,12 +224,14 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 项目 | 状态 | 证据 |
 | --- | --- | --- |
 | 房间/成员/消息状态机 | ✅ 已验证 | `test/rooms.test.mjs` 12 用例 |
-| Host 端到端（建房间 → 加 agent → @ 它 → 它真的被驱动 → 回复按 seq 落库） | ✅ 已验证（假模型） | `test/host.integration.test.mjs` 12 用例 |
+| Host 端到端（建房间 → 加 agent → @ 它 → 它真的被驱动 → 回复按 seq 落库） | ✅ 已验证（假模型） | `test/host.integration.test.mjs` 13 用例 |
 | 三条规则调度 + 预算闸门 | ✅ 已验证 | 同上：@ 才回 / 全员一轮 / 未 @ 不白烧调用 |
 | 三条规则**同时开**：一轮内同一人只说一次（主持人 @ 的和全员队列点到的人不会说两遍、不吃掉两份预算） | ✅ 已验证 | 同上：三人屋全开规则，断言恰好 A、B、C 各一次、共 3 次驱动 |
 | 发言中插话不被吞（一轮跑着时又说一句，这句排到轮末再按规则处理） | ✅ 已验证 | 同上：把这一轮用 gate 卡住 → 插一句 @B → 放行后断言多出两轮驱动且带上插话原文 |
 | **每个 agent 有自己的原生会话**（两轮发言各回各的会话，记忆互不串台） | ✅ 已验证 | 同上：两个 agent 连开两轮，断言各自两轮都落在同一个 `sessionId`、且自己的会话里没有别人的话 |
 | **这一轮没留下话时不会把上一句再发一遍**（用户点「停下这一轮」/ 只调了工具没出文本） | ✅ 已验证 | 同上：第二轮被标成 interrupted，断言旧台词只出现 1 次、房间以「没回上来」收尾。修复前同一场景落 2 条重复消息 |
+| **agent 没回上来时可以只重试它一个**（不惊动屋里其他人、也不换会话） | ✅ 已验证 | 同上：假模型第一轮直接抛出 → 占位消息带错误码落库、只驱动了被 @ 的那一个；`msg.retry` 之后它的回复接在后面，驱动 2 次且是同一个 `sessionId`，占位消息仍然只有 1 条（失败痕迹不抹掉）；拿人说的那句去重试会被拒（`not_agent_message`） |
+| 「重试」入口在真实渲染里点得动 | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'retry'`：真让 agent 挂一次 → 断言灰色占位 + 正好一个「重试」按钮且未禁用 → 点它 → 新回复经真实 `msg.retry` 落库，占位不被抹掉 |
 | LAN 全链路（加入 → 双向发言 → 派发远程 agent → 回传落库 → 离开） | ✅ 已验证（真 HTTP、假模型） | `test/lan.test.mjs` 9 用例：两个独立实例各起监听、互相走 `/lan/*` |
 | LAN 失败路径（对面掉线 → 超时 → 失败占位）、门禁（无/错 peerId 403） | ✅ 已验证 | 同上 |
 | LAN 重连（宿主换一代进程 → 加入方不手动操作就能继续说话，成员不重复） | ✅ 已验证 | 同上：同一端口重开宿主，旧 `peerId` 失效后 `msg.send` 自己重新握手并落库 |
@@ -246,7 +256,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **界面 / 宿主 / 加入方三方的协议面对得上**（这类错没有异常、没有日志，表现只是「点了没反应」） | ✅ 已验证 | `test/protocol.test.mjs` 3 用例：界面调的每个 action 宿主都有分支、界面用的每个 RPC 方法宿主都有端点、加入方敲的每个 `/lan/*` 路由宿主都在服务。把宿主的 `bot.update` 改名成 `bot.patch` 再跑，第一条当场报出来（不是空转） |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
 | 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内 / 收起成胶囊也拖得动） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 五条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900），而胶囊那条在旧代码上一步也拖不动（拖动监听跟着 `floatOpen` 一起关掉了） |
-| 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/gone.png` |
+| 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 重试 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/retry.png`、`docs/gone.png` |
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
 | **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `git clone --depth 1` 到空目录 → `npm install` → `npm test` 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
@@ -274,7 +284,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + LAN 抗坏包 + 代码指纹 + 协议面 + 客户端装载 + 包清单（53 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + LAN 抗坏包 + 代码指纹 + 协议面 + 客户端装载 + 包清单（54 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

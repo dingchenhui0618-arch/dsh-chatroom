@@ -467,6 +467,66 @@ test('这一轮没留下话（被中断）时，不会把上一条再当成新�
   }
 })
 
+test('agent 没回上来时，可以只重试它一个：不惊动别人、也不换会话', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  let turns = 0
+  const { ctx, routes, prompts } = fakeCtx(dir, {
+    reply: () => {
+      turns += 1
+      // 第一次真挂（同步抛出，走的是和真实模型报错同一条路径），第二次正常说话。
+      if (turns === 1) throw Object.assign(new Error('模型这一轮挂了'), { code: 'model_failed' })
+      return '回来了：缺口 31 万。'
+    },
+  })
+  const dispose = await apply(ctx)
+  const settle = async (check, label) => {
+    for (let i = 0; i < 60; i += 1) {
+      const hit = await check()
+      if (hit) return hit
+      await tick(50)
+    }
+    throw new Error(`等待超时：${label}`)
+  }
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '重试一次' } })
+    const roomId = created.value.rooms[0].id
+    for (const name of ['A', 'B']) {
+      await call(routes, 'command', { action: 'member.createBot', input: { roomId, name } })
+    }
+
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 报一下缺口。' } })
+    const failed = await settle(async () => {
+      const room = (await call(routes, 'snapshot', {})).value.rooms[0]
+      return room.messages.find((message) => message.status === 'error') ?? null
+    }, 'A 这一轮失败')
+    assert.match(failed.text, /没回上来/, '失败要留在房里当占位，不能悄悄没了')
+    assert.equal(prompts.length, 1, '@ 只点到 A，B 不该被驱动')
+
+    const retried = await call(routes, 'command', { action: 'msg.retry', input: { roomId, seq: failed.seq } })
+    assert.equal(retried.ok, true, `重试该被接受：${JSON.stringify(retried.error)}`)
+    const replied = await settle(async () => {
+      const room = (await call(routes, 'snapshot', {})).value.rooms[0]
+      return room.messages.find((message) => message.text === '回来了：缺口 31 万。') ?? null
+    }, 'A 重试后落库')
+    assert.equal(replied.authorName, 'A')
+    assert.equal(prompts.length, 2, '只该把 A 再跑一次，别把屋里其他人也带上')
+    assert.equal(prompts[0].sessionId, prompts[1].sessionId, '重试要回到 A 自己那个原生会话')
+    // 失败的占位留在历史里，成功那条接在后面：这一轮确实失败过，不该抹掉。
+    assert.equal(
+      (await call(routes, 'snapshot', {})).value.rooms[0].messages.filter((message) => message.status === 'error').length,
+      1,
+    )
+
+    // 人说的话没有「重说」这回事：重试只对 agent 的回合有意义。
+    const mine = (await call(routes, 'snapshot', {})).value.rooms[0].messages.find((message) => message.authorKind === 'human')
+    const refused = await call(routes, 'command', { action: 'msg.retry', input: { roomId, seq: mine.seq } })
+    assert.equal(refused.ok, false)
+    assert.equal(refused.error.code, 'not_agent_message')
+  } finally {
+    await dispose()
+  }
+})
+
 test('信封不合法直接 400，不会把垃圾当成命令', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
   const { ctx, routes } = fakeCtx(dir)
