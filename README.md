@@ -286,7 +286,11 @@ node tools/lan-check.mjs guest --host 10.0.51.18:4399 --code K7M2QD
 2. 我 @ 我自己带过去的 agent → 宿主把这一轮**派回我这台**，由它的原生会话跑完再回传
    （少这一段，「人带着自己的 agent 进屋」只是半条路）。
 
-Windows 上连不上，先看入站防火墙（只开这一个端口，管理员 PowerShell）：
+Windows 上连不上，先看入站防火墙。第一次监听时系统会问「允许访问」，选允许就够了 ——
+但那条**程序级**规则只覆盖当时那个网络类型（实测这台机器是「公用」：
+`DeepSeek Harness` 与 DSH 自带的 node.exe 各有一条已启用的入站规则，TCP 全端口）。
+换了网络类型（家里 Wi-Fi 常是「专用」）、或当时点了取消，就补一条按端口的（不带
+`-Profile`，三档都覆盖）：
 
 ```powershell
 New-NetFirewallRule -DisplayName "dsh-chatroom" -Direction Inbound -Protocol TCP -LocalPort 4399 -Action Allow
@@ -384,8 +388,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **说满 200 句之后历史翻得回去**（投影只有最近 200 条，房间能存 4000 条） | ✅ 已验证 | `test/messages-page.test.mjs` 5 用例：分页窗口 / 上限 / 还有没有更早的；「一路翻到底不重不漏」（240 条按 100 条一页翻完，seq 正好是 1..240）；真端点返回更早那 40 条且不存在的屋子给 `room_not_found`；加入方那台机器经 `/lan/messages` 从宿主拿到更早的消息，拿别人的房间 id 两边都只能得到 `room_not_found`，假 `peerId` 直接打 LAN 端点得到 403 `peer_unknown`；加入方桌面端重启（同 profile 关掉再起）之后翻页照常 —— 新凭据接回同一间屋子，上一代 `peerId` 打 LAN 直接 403（翻页与「同一个人重新握手」交叉的地方，两边功能各自都在，拼起来没人验过）。反证抓出两个真 bug：镜像房间的 `truncated` 按本机条数重算永远是 false（加入方永远翻不回去）、`lan-bridge` 没转发 `page`。界面侧见 `verify: 'history'` 与 `docs/history.png`：240 句的屋子只显示最后一屏，点一次入口变 240 条、首句变成 `11/01`、入口自己消失、滚动位置没被跳走 |
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
-| **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `git clone --depth 1` 到空目录 → `npm install` → `npm test` 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
-| **别人装得上**（`npm pack` 出来的那份能不能被 import） | ✅ 已验证 | `ea3b366` / `4a43dd8` 上 `npm pack` 31 个文件（无 `test` / `tools` / `node_modules` 泄漏），把 tarball 装进空目录后 `import('dsh-chatroom')` 拿得到 `name` / `inject` / `apply`，`icon.svg`、`locale/*.json`、`cordis.patch.yml`、`lib/client.js` 都在，客户端里没有一行 `@deepseek-ai/*` |
+| **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `e19f0e6` 上 `git clone` 到空目录 → `npm install`（5 个包）→ `npm test` **77/77** 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
+| **别人装得上**（`npm pack` 出来的那份能不能被 import） | ✅ 已验证 | `e19f0e6` 上 `npm pack` **37 个文件**（验收截图 `docs/*.png` 随包带上，无 `test` / `tools` / `node_modules` 泄漏），把 tarball 装进空目录后 `import('dsh-chatroom')` 拿得到 `name` / `inject` / `apply`，`icon.svg`、`locale/*.json`、`cordis.patch.yml`、`lib/client.js` 都在，客户端里没有一行 `@deepseek-ai/*`；profile 里跑着的那份与仓库 `lib/`、`src/`、`locale/` 逐文件 SHA256 一致 |
 | **CI 绿**（ubuntu + node 22/24 跑 `npm install` + `npm test`） | ✅ 已验证 | GitHub Actions `test` 两个 job 各 11–12s 通过（run `44050852162`）；同一套用例先在 WSL2 Ubuntu 22.04 / node v22.22.2 上真跑过一遍全绿才让 CI 去跑 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：这一台跑 `node tools/lan-check.mjs host`，真机器上照抄它打印的 guest 命令；两段都过即验收（第二段连「派回我这台跑我自己的 agent」一起验） |
