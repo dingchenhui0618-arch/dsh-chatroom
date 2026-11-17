@@ -95,6 +95,15 @@ const shots = [
     caption: '三台机器同屋：本机 + 两台 LAN 机器各带自己的 agent，成员与消息都按机器名区分',
   },
   {
+    name: 'bring-agent',
+    view: 'panel',
+    setup: '/preview/bring',
+    waitFor: '.cr-msg',
+    settle: 'read',
+    verify: 'bring-agent',
+    caption: '加入之后才建的 agent：那台机器把名单报上来，宿主这边立刻多一个人，@ 它还能跨机跑一轮',
+  },
+  {
     name: 'retry',
     view: 'panel',
     setup: '/preview/fail',
@@ -545,6 +554,130 @@ try {
       const machines = new Set(state.rows.map((row) => row.chip).filter(Boolean))
       if (machines.size < 2) throw new Error(`两台远程机器没有区分开：${JSON.stringify([...machines])}`)
       console.log(`verified — 三台机器同屋：${wantMembers.length} 个成员、两台远程机器各标自己的机器名`)
+    }
+    // 「agent 怎么进来」：加入那一刻只带得走本机**已有的** agent，新机器上一个都没有。
+    // 这一屏要证明补报那条路是通的：那台机器建完 agent，我这边成员列立刻多一个人、
+    // 认得出是哪台机器的、而且 @ 它真的把这一轮派回去跑；左栏「我的 agent」能建能删。
+    if (wants(shot, 'bring-agent')) {
+      const read = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const text = (node) => (node ? String(node.textContent).trim() : '')
+            const members = [...document.querySelectorAll('.cr-member')].map((row) => {
+              const chip = row.querySelector('.cr-chip.cr-lan')
+              return {
+                name: text(row.querySelector('.cr-member-name')),
+                lan: Boolean(chip),
+                title: chip ? String(chip.getAttribute('title') || '') : '',
+              }
+            })
+            const rows = [...document.querySelectorAll('.cr-msg')].map((row) => ({
+              name: text(row.querySelector('.cr-msg-name')).replace(/（.*?）/g, '').trim(),
+              chip: text(row.querySelector('.cr-msg-meta .cr-chip.cr-lan')),
+            }))
+            const chips = [...document.querySelectorAll('.cr-agent-chip .cr-agent-name')].map(text)
+            return { members, rows, chips }
+          })()`,
+        )
+      const find = (state, name) => state.members.find((row) => row.name === name)
+
+      const state = await read()
+      for (const name of ['陈默', '库存 agent']) {
+        const row = find(state, name)
+        if (!row) throw new Error(`成员列里没有「${name}」：${JSON.stringify(state.members.map((item) => item.name))}`)
+        if (!row.lan) throw new Error(`「${name}」是别的机器上的，却没标 LAN`)
+      }
+      if (!/陈默的 ThinkPad/.test(find(state, '库存 agent').title)) {
+        throw new Error(`认不出「库存 agent」是哪台机器带的：${JSON.stringify(find(state, '库存 agent').title)}`)
+      }
+      if (find(state, '林岸') && find(state, '林岸').lan) throw new Error('本机的人被贴成了 LAN')
+      const reply = state.rows.find((row) => row.name === '库存 agent')
+      if (!reply) throw new Error('消息里没有「库存 agent」的回复，这一轮没派回那台机器')
+      if (!/陈默的 ThinkPad/.test(reply.chip)) throw new Error(`回复的来源没标出机器：${JSON.stringify(reply.chip)}`)
+
+      // 左栏「我的 agent」：自己带的 agent 都在这儿，而且能建、能删。
+      for (const name of ['账期 agent', '退货 agent']) {
+        if (!state.chips.includes(name)) throw new Error(`「我的 agent」里少了 ${name}：${JSON.stringify(state.chips)}`)
+      }
+      const opened = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const button = [...document.querySelectorAll('.cr-col-foot .cr-link-btn')].find((node) =>
+            node.textContent.includes('新建一个 agent'),
+          )
+          if (!button) return false
+          button.click()
+          return true
+        })()`,
+      )
+      if (!opened) throw new Error('点不开「我的 agent」里的新建入口')
+      const filled = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const inputs = [...document.querySelectorAll('.cr-my-form input')]
+          if (inputs.length < 2) return false
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          const put = (el, value) => {
+            el.focus()
+            setter.call(el, value)
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+          }
+          put(inputs[0], '临时 agent')
+          put(inputs[1], '断言建的，建完就删')
+          return true
+        })()`,
+      )
+      if (!filled) throw new Error('「我的 agent」的表单没展开出名字与职责两栏')
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const button = [...document.querySelectorAll('.cr-my-form button')].find((node) => node.textContent.trim() === '保存')
+          if (!button) return false
+          button.click()
+          return true
+        })()`,
+      )
+      let created = null
+      for (let i = 0; i < 60; i += 1) {
+        created = await read()
+        if (created.chips.includes('临时 agent') && find(created, '临时 agent')) break
+        await sleep(100)
+      }
+      if (!created.chips.includes('临时 agent')) {
+        throw new Error(`建完的 agent 没进「我的 agent」：${JSON.stringify(created.chips)}`)
+      }
+      if (!find(created, '临时 agent')) throw new Error('建完的 agent 没进这间屋子')
+
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const chip = [...document.querySelectorAll('.cr-agent-chip')].find((row) =>
+            String(row.textContent).includes('临时 agent'),
+          )
+          const button = chip && chip.querySelector('.cr-agent-x')
+          if (!button) return false
+          button.click()
+          return true
+        })()`,
+      )
+      let removed = null
+      for (let i = 0; i < 60; i += 1) {
+        removed = await read()
+        if (!removed.chips.includes('临时 agent') && !find(removed, '临时 agent')) break
+        await sleep(100)
+      }
+      if (removed.chips.includes('临时 agent') || find(removed, '临时 agent')) {
+        throw new Error('删掉的 agent 还留在「我的 agent」或成员列里')
+      }
+      // 这一屏专开的演示例房间收掉：后面的截图不该带着上一屏的故事。
+      await fetch(`http://127.0.0.1:${port}/preview/tidy`)
+      console.log('verified — 空手加入的机器补建 agent：成员列当场多一个 LAN·陈默的 ThinkPad，@ 它能跑一轮；左栏能建能删')
     }
     // 浮窗既然能拖到任何地方，就得证明它拖不丢：记住的坐标要真的用上、越界的坐标要夹回、
     // 拖到屏幕外要夹住、窗口变窄以后还得在视口里。四条都跑在真实渲染的页面里。

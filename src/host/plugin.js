@@ -84,6 +84,39 @@ export async function dispatch({ store, speaker, lan = null, command }) {
       })
       break
     }
+    case 'bot.create': {
+      /**
+       * 建一个 agent，但不绑定房间。
+       *
+       * 为什么需要它：加入别人的屋子时，能带进屋的只有**加入前就已经存在**的 agent。
+       * 新装的机器上一个都没有，人只能先在自己屋里建一个再退出来加入 —— 这一步没人猜得到。
+       * 所以面板上给一个「我的 agent」，建完就报给宿主（这台机器如果正在别人的屋里）。
+       * 顺手能带房间：在本地房间里点新建，本来就期待它马上出现在屋里。
+       */
+      const bot = {
+        id: `bot_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        name: String(input.name ?? '').trim().slice(0, 60) || '新 agent',
+        role: String(input.role ?? '').trim().slice(0, 200),
+        sessionId: randomUUID(),
+        cwd: null,
+        createdAt: new Date().toISOString(),
+        lastError: null,
+        lastSpokeAt: null,
+      }
+      store.commit((draft) => {
+        draft.bots.push(bot)
+        if (!input.roomId) return
+        const room = getRoom(draft, input.roomId)
+        // 镜像房间的成员在宿主那边：这里补不进去，交给 announceAgents 报上去。
+        if (!room || room.remote) return
+        addMember(draft, {
+          roomId: room.id,
+          member: { id: `m_${bot.id}`, kind: 'bot', name: bot.name, role: bot.role, botId: bot.id, sessionId: bot.sessionId },
+        })
+      })
+      if (lan && (state.links ?? []).length) await lan.announceAgents()
+      break
+    }
     case 'member.createBot': {
       assertLocal(roomOf(input.roomId), '加 agent')
       store.commit((draft) => {
@@ -242,6 +275,30 @@ export async function dispatch({ store, speaker, lan = null, command }) {
           }
         }
       })
+      // 名字/职责改了也要让宿主那边跟着变，否则对面看到的还是旧名字。
+      if (lan && (state.links ?? []).length) await lan.announceAgents()
+      break
+    }
+    case 'bot.remove': {
+      /**
+       * 删掉一个 agent（连同它在本地房间里的成员身份）。
+       *
+       * 只在「我的 agent」里给入口：成员列的「移出房间」只是把它从这一间屋子挪走，
+       * agent 本身还在，别的屋子还用得上。删掉之后如果这台机器正在别人的屋里，
+       * 也得让宿主知道 —— 否则对面会一直留着一个不回话的成员。
+       */
+      store.commit((draft) => {
+        const bot = draft.bots.find((row) => row.id === input.botId)
+        if (!bot) throw Object.assign(new Error('bot_not_found'), { code: 'bot_not_found' })
+        draft.bots = draft.bots.filter((row) => row.id !== bot.id)
+        for (const room of draft.rooms) {
+          if (room.remote) continue
+          for (const member of room.members.filter((row) => row.botId === bot.id)) {
+            removeMember(draft, { roomId: room.id, memberId: member.id })
+          }
+        }
+      })
+      if (lan && (state.links ?? []).length) await lan.announceAgents()
       break
     }
     default:

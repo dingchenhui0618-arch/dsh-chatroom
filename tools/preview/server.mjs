@@ -128,6 +128,27 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 截图收尾用：把这一屏专开的演示例房间收掉。
+      // 留着的话它会出现在后面几张图的房间列表里 —— 那是上一屏的故事，不是这一屏的。
+      if (nudge && url.pathname === '/preview/tidy') {
+        usage.writes += 1
+        const view = host.snapshot()
+        const demo = view.rooms.find((row) => row.name === '带人进屋')
+        if (demo) await host.command({ action: 'room.dissolve', input: { roomId: demo.id } })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: Boolean(demo), roomId: demo?.id ?? null }))
+        return
+      }
+
+      // 截图用：「加入之后才建 agent」那一屏 —— 第二台机器空手进来，再在屋里建一个。
+      if (nudge && url.pathname === '/preview/bring') {
+        usage.writes += 1
+        const brought = await host.bringAgent()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, rooms: brought.snapshot.rooms.length }))
+        return
+      }
+
       // 截图用：让宿主这边的 agent 真失败一轮，好去截「没回上来 + 重试」那一屏。
       if (nudge && url.pathname === '/preview/fail') {
         usage.writes += 1

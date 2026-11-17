@@ -223,7 +223,7 @@ export async function bootFixture({ port } = {}) {
       return side.snapshot()
     },
     /**
-     * 截「重试」用：让本机的「账期 agent」真失败一轮。
+     * 截「重试」用：让本机的「对账 agent」真失败一轮。
      * 单独开一间屋子演这张图：失败那一屏不该把主线房间的历史带脏，
      * 后面「三台机器同屋 / 解散」还要用那间屋子的干净状态。
      * 走的是和人一模一样的路径 —— 人发一句 @ 它的话，它的回合就挂了，
@@ -242,12 +242,12 @@ export async function bootFixture({ port } = {}) {
       })
       await side.command({
         action: 'member.createBot',
-        input: { roomId: target.id, name: '账期 agent', role: '盯应付账期与现金流缺口' },
+        input: { roomId: target.id, name: '对账 agent', role: '对账口径与差异归因' },
       })
       model.failNext = true
       await side.command({
         action: 'msg.send',
-        input: { roomId: target.id, text: '@账期 agent 缺口按哪天的账期算的？' },
+        input: { roomId: target.id, text: '@对账 agent 缺口按哪天的账期算的？' },
       })
       for (let i = 0; i < 60; i += 1) {
         const fresh = side.snapshot().rooms.find((row) => row.id === target.id)
@@ -256,6 +256,69 @@ export async function bootFixture({ port } = {}) {
       }
       pinTimes(side.store)
       return side.snapshot()
+    },
+    /**
+     * 截「agent 怎么进来」用：第二台机器先空手加入，再在界面里建一个 agent。
+     *
+     * 只认加入那一刻的名单时这条路是断的：屋里永远只有他一个人，对面的成员列
+     * 还看不出少了什么。这里每一步都走真接口 —— 真握手、真报名单、宿主真对账、
+     * 真把一个回合派回那台机器。单独开一间屋子，别把主线房间的历史带脏。
+     */
+    async bringAgent() {
+      const created = await side.command({
+        action: 'room.create',
+        input: { name: '带人进屋', topic: '新机器上还没有 agent，先在这间屋里建一个' },
+      })
+      const target = created.rooms.find((row) => row.name === '带人进屋')
+      if (!target) throw new Error('没能开出「带人进屋」这间屋子')
+      side.store.commit((draft) => {
+        const fresh = draft.rooms.find((row) => row.id === target.id)
+        if (fresh) fresh.code = 'B7K2QD'
+      })
+      // 屋里放一个本机 agent 作对照：本机的成员不带标，远程的才带 ——
+      // 这一屏既演「补报进来的 agent」，也演「归属一眼能分开」。
+      await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_cashflow' } })
+      const guest = await bootGuest({
+        port: side.lan.status().port,
+        code: 'B7K2QD',
+        name: '陈默',
+        machine: '陈默的 ThinkPad',
+        withAgent: false,
+        reply: '1.2 万件里 7 千件能在 11/11 前清掉，剩下的转明年春季，退货成本压回 15 万。',
+      })
+      const mirror = guest.snapshot().rooms.find((room) => room.remote)
+      if (!mirror) throw new Error('加入方没有镜像房间')
+      await guest.command({
+        action: 'msg.send',
+        input: { roomId: mirror.id, text: '我先到了：这台机器上还没配 agent。尾货我盘过一遍，三个款合计 1.2 万件。' },
+      })
+      // 加入之后才建 —— 这正是「agent 怎么进来」那条真实路径。
+      await guest.command({
+        action: 'bot.create',
+        input: { roomId: mirror.id, name: '库存 agent', role: '盯尾货库存与清仓节奏' },
+      })
+      for (let i = 0; i < 80; i += 1) {
+        const room = side.snapshot().rooms.find((row) => row.id === target.id)
+        if (room && room.members.some((member) => member.name === '库存 agent')) break
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      await side.command({
+        action: 'msg.send',
+        input: { roomId: target.id, text: '@库存 agent 1.2 万件尾货怎么排？' },
+      })
+      // 这一轮要跨机派发回来：等它落库再截图，否则截到的是一句没人回的话。
+      for (let i = 0; i < 120; i += 1) {
+        const room = side.snapshot().rooms.find((row) => row.id === target.id)
+        if (room && room.messages.some((message) => message.authorName === '库存 agent')) break
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      await side.command({
+        action: 'msg.send',
+        input: { roomId: target.id, text: '那就按 11/11 前清掉 7 千件排，剩下三成转明年春季。' },
+      })
+      pinTimes(side.store)
+      pinTimes(guest.store)
+      return { snapshot: side.snapshot(), guest }
     },
   }
 }
@@ -273,20 +336,24 @@ export async function bootGuest({
   machine = '周荻的 MacBook',
   role = '拆尾货与退货结构',
   reply = '尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。',
+  // 新装的机器上一个 agent 都没有：那条路（先挤进屋、再建 agent）也要能演出来。
+  withAgent = true,
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-guest-'))
   const side = await bootSide({ dir, reply })
   await side.command({ action: 'self.rename', input: { name } })
-  const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
-  // 同宿主那边：房间码也钉死，加入方视角的截图才不会每次都不一样。
-  side.store.commit((draft) => {
-    const own = draft.rooms.find((row) => row.id === local.rooms[0].id)
-    if (own) own.code = 'M8NP3C'
-  })
-  await side.command({
-    action: 'member.createBot',
-    input: { roomId: local.rooms[0].id, name: botName, role },
-  })
+  if (withAgent) {
+    const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
+    // 同宿主那边：房间码也钉死，加入方视角的截图才不会每次都不一样。
+    side.store.commit((draft) => {
+      const own = draft.rooms.find((row) => row.id === local.rooms[0].id)
+      if (own) own.code = 'M8NP3C'
+    })
+    await side.command({
+      action: 'member.createBot',
+      input: { roomId: local.rooms[0].id, name: botName, role },
+    })
+  }
   await side.command({
     action: 'lan.join',
     input: { host, port, code, machine },

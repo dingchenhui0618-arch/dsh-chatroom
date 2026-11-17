@@ -8,6 +8,7 @@ import {
   markRead,
   membersOfPeer,
   postMessage,
+  removeMember,
   removePeer,
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
@@ -219,6 +220,91 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return peer
   }
 
+  /**
+   * 某台机器上报的 agent → 屋里的成员 id。
+   *
+   * 带上 peer 片段：两台机器如果装的是同一份配置（bot id 相同），只按 botId 拼 id
+   * 会让第二个人顶掉第一个人的成员，话就算到别人头上。
+   */
+  function agentMemberId(peer, key) {
+    return `m_${peer.id.slice(2, 10)}_${key}`
+  }
+
+  /**
+   * 把「这台机器现在带着哪些 agent」对账成屋里的成员：缺的补、改的更新、撤掉的移除。
+   *
+   * 为什么需要这一步而不是只在加入时报一次：新装的机器上一个 agent 都没有，
+   * 人往往是**先挤进屋、才想起要带谁**。只认加入那一刻的名单，屋里就永远只有他一个人。
+   */
+  function reconcileAgents(draft, peer, agents, origin) {
+    const room = getRoom(draft, peer.roomId)
+    if (!room) fail('room_not_found', '这间屋子已经不在了。')
+    const declared = (Array.isArray(agents) ? agents : [])
+      .slice(0, 12)
+      .map((agent) => ({
+        key: String(agent?.id ?? '').trim().slice(0, 64),
+        name: String(agent?.name ?? '').trim().slice(0, 60),
+        role: String(agent?.role ?? '').trim().slice(0, 200),
+      }))
+      .filter((agent) => agent.key)
+    const seen = new Set(declared.map((agent) => agent.key))
+    let added = 0
+    let updated = 0
+    const nextAgents = []
+    for (const agent of declared) {
+      const existing = room.members.find(
+        (member) => member.owner === peer.id && member.kind === 'bot' && member.botId === agent.key,
+      )
+      if (existing) {
+        if (agent.name && existing.name !== agent.name) {
+          existing.name = agent.name
+          updated += 1
+        }
+        if (existing.role !== agent.role) {
+          existing.role = agent.role
+          updated += 1
+        }
+        nextAgents.push({ memberId: existing.id, agentId: agent.key, name: existing.name })
+        continue
+      }
+      const row = addMember(draft, {
+        roomId: room.id,
+        member: {
+          id: agentMemberId(peer, agent.key),
+          kind: 'bot',
+          name: agent.name || 'agent',
+          role: agent.role,
+          botId: agent.key,
+          sessionId: null,
+          origin,
+          owner: peer.id,
+          reach: 'lan',
+        },
+      })
+      nextAgents.push({ memberId: row.id, agentId: agent.key, name: row.name })
+      added += 1
+    }
+    // 那台机器上已经删掉/换掉的 agent：成员也撤，别留一个永远不回话的幽灵。
+    let removed = 0
+    for (const member of room.members.filter((row) => row.owner === peer.id && row.kind === 'bot')) {
+      if (seen.has(member.botId)) continue
+      removeMember(draft, { roomId: room.id, memberId: member.id })
+      removed += 1
+    }
+    peer.agents = nextAgents
+    return { added, updated, removed }
+  }
+
+  /** 加入之后补报名单走这里：对账 + 把新投影回给那台机器。 */
+  function syncAgents(peer, agents) {
+    let stat = { added: 0, updated: 0, removed: 0 }
+    store.commit((draft) => {
+      stat = reconcileAgents(draft, peer, agents, { kind: 'lan', peer: peer.address, machine: peer.machine })
+    })
+    if (stat.added || stat.updated || stat.removed) wake()
+    return { ...stat, snapshot: viewFor(peer) }
+  }
+
   function joinRoom({ code, machine: guestMachine, self, agents }, address) {
     const wanted = String(code ?? '').trim().toUpperCase()
     if (!wanted) fail('code_required', '房间码不能为空。')
@@ -258,28 +344,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         },
       })
       peer.selfMemberId = human.id
-      const declared = Array.isArray(agents) ? agents.slice(0, 12) : []
-      for (const agent of declared) {
-        const key = String(agent?.id ?? '').trim().slice(0, 64)
-        if (!key) continue
-        const row = addMember(draft, {
-          roomId: room.id,
-          member: {
-            // 成员 id 带上 peer 片段：两台机器如果装的是同一份配置（bot id 相同），
-            // 只按 botId 拼 id 会让第二个人顶掉第一个人的成员，话就算到别人头上。
-            id: `m_${peerId.slice(2, 10)}_${key}`,
-            kind: 'bot',
-            name: agent?.name,
-            role: agent?.role,
-            botId: key,
-            sessionId: null,
-            origin,
-            owner: peerId,
-            reach: 'lan',
-          },
-        })
-        peer.agents.push({ memberId: row.id, agentId: key, name: row.name })
-      }
+      // 加入那一刻报上来的 agent 名单走同一套对账，和「加入之后补报」共用一条路。
+      reconcileAgents(draft, peer, agents, origin)
     })
 
     peers.set(peerId, peer)
@@ -489,6 +555,14 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           })
         }
         value = { renamed: Boolean(name) }
+      } else if (path === '/lan/agents' && request.method === 'POST') {
+        /**
+         * 那台机器补报名单：它刚建了一个 agent，或者改了名字/职责、删掉了一个。
+         * 宿主在这里对账，改名不动历史（消息里记的是当时的署名）。
+         */
+        const input = await readJson(request)
+        const peer = requirePeer(input.peerId)
+        value = syncAgents(peer, input.agents)
       } else if (path === '/lan/leave' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)

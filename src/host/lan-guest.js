@@ -406,6 +406,36 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     return { renamed: true }
   }
 
+  /**
+   * 把本机现在的 agent 名单报给宿主。
+   *
+   * 加入那一刻报过一次，但「先挤进屋、再想起带谁」才是常态 —— 新装的机器上一个
+   * agent 都没有。不补这一步，屋里就永远只有他一个人，而对面的成员列毫无提示。
+   * 改名/改职责、删掉 agent 也走这条：宿主那边对账，历史消息保留当时的署名。
+   */
+  async function announceAgents() {
+    const records = links().filter((record) => record.status !== 'gone')
+    let last = null
+    for (const record of records) {
+      last = await withPeer(record, async (peer) => {
+        const value = await postJson(
+          `${baseUrl(peer.host, peer.port)}/lan/agents`,
+          {
+            peerId: peer.peerId,
+            agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+          },
+          { timeoutMs: 8000 },
+        )
+        if (value?.snapshot) applyRemote(peer.id, value.snapshot)
+        return value
+      }).catch((error) => {
+        log('lan_announce_failed', { link: record.id, error })
+        return null
+      })
+    }
+    return last
+  }
+
   async function leave(linkId) {
     const record = linkById(linkId)
     const runtime = runtimes.get(linkId)
@@ -457,5 +487,5 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     }
   }
 
-  return { join, leave, send, read, rename, resume, stop, snapshotView, linkByRoom, links }
+  return { join, leave, send, read, rename, resume, stop, snapshotView, linkByRoom, links, announceAgents }
 }
