@@ -1,5 +1,7 @@
 # dsh-chatroom · 多人个人聊天室
 
+[![test](https://github.com/dingchenhui0618-arch/dsh-chatroom/actions/workflows/test.yml/badge.svg)](https://github.com/dingchenhui0618-arch/dsh-chatroom/actions/workflows/test.yml)
+
 在 DeepSeek Harness 里开一间屋子：**你**、**你带进来的 agent**，以及**局域网另一台机器上的人和它的 agent**
 一起说话。agent 不是「问一句答一句」的工具，而是屋里的成员 —— 有名字、有职责、有自己独立的会话历史。
 
@@ -247,6 +249,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
 | **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `git clone --depth 1` 到空目录 → `npm install` → `npm test` 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
+| **别人装得上**（`npm pack` 出来的那份能不能被 import） | ✅ 已验证 | `ea3b366` / `4a43dd8` 上 `npm pack` 31 个文件（无 `test` / `tools` / `node_modules` 泄漏），把 tarball 装进空目录后 `import('dsh-chatroom')` 拿得到 `name` / `inject` / `apply`，`icon.svg`、`locale/*.json`、`cordis.patch.yml`、`lib/client.js` 都在，客户端里没有一行 `@deepseek-ai/*` |
+| **CI 绿**（ubuntu + node 22/24 跑 `npm install` + `npm test`） | ✅ 已验证 | GitHub Actions `test` 两个 job 各 11–12s 通过（run `44050852162`）；同一套用例先在 WSL2 Ubuntu 22.04 / node v22.22.2 上真跑过一遍全绿才让 CI 去跑 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：在上面跑一次 `tools/lan-check.mjs guest --host <本机 LAN IP>:4399 --code <房间码>` |
 
