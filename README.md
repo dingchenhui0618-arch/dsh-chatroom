@@ -145,7 +145,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 3. 说话。想点名就 `@名字`（输入 `@` 会弹出成员列表），或者按 **让全员说一轮**。
 4. 想让另一台机器进来：右上 **邀请**，把地址和房间码发过去；对方在其聊天室里 **加入 LAN 房间**。
 5. 会话界面里，标题栏右侧有「聊天室」开关，点开是那块**独立悬浮窗**：可拖动、可折叠，
-   有未读计数，Enter 直接发。
+   有未读计数，Enter 直接发。位置会记住，双击标题栏回到右下角；拖到边上会被留住 ——
+   窗口改窄、重开页面之后它还在看得见的地方，不会变成一块点不到的浮窗。
 
 ## 身份与来源
 
@@ -175,6 +176,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
+| 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 四条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900） |
 | 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/gone.png` |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
@@ -203,6 +205,10 @@ node tools/lan-check.mjs host|guest   # 两台机器之间的联通自检
 
 截图里的消息时间、房间码、宿主 LAN 端口都钉死了（`tools/preview/fixture.mjs`），
 所以重复跑出来的图只差抗锯齿噪点 —— `docs/` 的 diff 才看得懂谁真的改了界面。
+
+**重跑截图前先重启预览服务器**：服务器里那份状态机是活的（上一轮会往里补消息、
+解散房间），拿同一份状态再截一遍，图和断言都会偏。`npm run preview:serve` 起来之后
+一次跑完七个镜头，才和 `docs/` 里那些图对得上。
 
 ## 目录
 

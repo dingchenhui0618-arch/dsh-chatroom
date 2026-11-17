@@ -61,6 +61,7 @@ const shots = [
     view: 'session',
     waitFor: '.cr-float-pill',
     open: '.cr-float-pill',
+    verify: 'float-bounds',
     caption: '会话界面里的独立悬浮窗：标题栏开关、拖动、折叠都在这一个入口',
   },
   {
@@ -153,6 +154,32 @@ async function waitForSelector(cdp, sessionId, selector, attempts = 80) {
     await sleep(100)
   }
   throw new Error(`等不到元素：${selector}`)
+}
+
+/** 元素在视口里的位置，连视口大小一起取回来，好判断它是不是跑出去了。 */
+async function boundsOf(cdp, sessionId, selector) {
+  return evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)})
+      if (!node) return null
+      const rect = node.getBoundingClientRect()
+      return {
+        left: Math.round(rect.left), top: Math.round(rect.top),
+        right: Math.round(rect.right), bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      }
+    })()`,
+  )
+}
+
+function assertInside(box, message) {
+  if (!box) throw new Error(`${message}：找不到元素`)
+  const outside =
+    box.left < 0 || box.top < 0 || box.right > box.viewport.width || box.bottom > box.viewport.height
+  if (outside) throw new Error(`${message}：${JSON.stringify(box)}`)
 }
 
 const profileDir = await mkdtemp(join(tmpdir(), 'chatroom-shot-'))
@@ -278,6 +305,74 @@ try {
       }
       if (!cleared) throw new Error('展开浮窗后未读没有清零')
       console.log('verified — 展开浮窗后未读归零（徽标与标题前缀都落回去）')
+    }
+    // 浮窗既然能拖到任何地方，就得证明它拖不丢：记住的坐标要真的用上、越界的坐标要夹回、
+    // 拖到屏幕外要夹住、窗口变窄以后还得在视口里。四条都跑在真实渲染的页面里。
+    if (shot.verify === 'float-bounds') {
+      const openCard = async () => {
+        await waitForSelector(cdp, sessionId, '.cr-float-pill')
+        await evaluate(cdp, sessionId, `(() => {
+          const node = document.querySelector('.cr-float-pill')
+          if (!node) return false
+          node.click()
+          return true
+        })()`)
+        await waitForSelector(cdp, sessionId, '.cr-float-card')
+      }
+
+      // 1. 记住的位置要真的被用上 —— 存到一个跟默认角落明显不同的地方再重开页面。
+      await evaluate(
+        cdp,
+        sessionId,
+        `localStorage.setItem('dsh-chatroom:float-pos:v1', JSON.stringify({ x: 100, y: 120 }))`,
+      )
+      await cdp.send('Page.reload', {}, sessionId)
+      await openCard()
+      const remembered = await boundsOf(cdp, sessionId, '.cr-float-card')
+      if (!remembered || Math.abs(remembered.left - 100) > 2 || Math.abs(remembered.top - 120) > 2) {
+        throw new Error(`重开页面后没有回到记住的位置：${JSON.stringify(remembered)}`)
+      }
+
+      // 2. 存的坐标在屏幕外（上次窗口更大时拖出去的）时，要夹回视口。
+      await evaluate(
+        cdp,
+        sessionId,
+        `localStorage.setItem('dsh-chatroom:float-pos:v1', JSON.stringify({ x: 99999, y: 99999 }))`,
+      )
+      await cdp.send('Page.reload', {}, sessionId)
+      await openCard()
+      assertInside(await boundsOf(cdp, sessionId, '.cr-float-card'), '存下来的越界坐标没有夹回视口')
+
+      // 3. 拖到屏幕外：松手以后就再也没有第二个抓手了，必须在拖动过程中就夹住。
+      const dragged = await evaluate(cdp, sessionId, `(() => {
+        const head = document.querySelector('.cr-float-head')
+        if (!head) return false
+        const box = head.getBoundingClientRect()
+        const at = (x, y) => ({ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true })
+        head.dispatchEvent(new PointerEvent('pointerdown', at(box.left + 16, box.top + 8)))
+        window.dispatchEvent(new PointerEvent('pointermove', at(9999, 9999)))
+        window.dispatchEvent(new PointerEvent('pointerup', at(9999, 9999)))
+        return true
+      })()`)
+      if (!dragged) throw new Error('抓不到浮窗标题栏，拖动这条验不了')
+      await sleep(200)
+      assertInside(await boundsOf(cdp, sessionId, '.cr-float-card'), '拖到屏幕外没有被夹住')
+
+      // 4. 窗口被拖窄：记住的坐标不变，但浮窗得留在看得见的地方。
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1024, height: 700, deviceScaleFactor: 2, mobile: false },
+        sessionId,
+      )
+      await sleep(300)
+      assertInside(await boundsOf(cdp, sessionId, '.cr-float-card'), '窗口变窄后浮窗跑到视口外')
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+        sessionId,
+      )
+      await evaluate(cdp, sessionId, `localStorage.removeItem('dsh-chatroom:float-pos:v1')`)
+      console.log('verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内')
     }
     await cdp.send('Target.closeTarget', { targetId })
   }
