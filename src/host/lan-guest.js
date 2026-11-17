@@ -217,6 +217,10 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
       {
         code,
         machine,
+        // 这张 link 的 id 就是「我这台现在这条连接」的稳定身份：它落盘，
+        // 桌面端重启、插件重载之后还是同一个值。宿主靠它认出「是同一个人回来了」，
+        // 而不是把旧那组留着当另一个人（见 lan-host.js 的接管逻辑）。
+        instance: linkId,
         self: { id: store.state.self.id, name: store.state.self.name },
         agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
         build: BUILD,
@@ -265,6 +269,7 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
           {
             code: record.code,
             machine: record.machine,
+            instance: record.id,
             self: { id: store.state.self.id, name: store.state.self.name },
             agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
             build: BUILD,

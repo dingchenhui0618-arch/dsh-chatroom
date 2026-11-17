@@ -177,6 +177,11 @@ DSH 自己的端口是 loopback + cookie + 每进程随机 token，**不能**拿
 - 宿主每 `idle/3`（≤15s）扫一次，真的掉线的机器整组成员撤掉；
 - 加入方任何一次转发撞上 `peer_unknown` 就自己重新握手再来一次（并发去重，只握一次）；
   进程重启时 `state.links` 由 `resume()` 接回；
+- **重新握手带 `instance`（就是那条 link 的 id，落盘的）**：宿主遇到同一间屋里已经有一个
+  `instance` 相同的 peer，就先把旧那组（人 + 它带的 agent）整组撤掉再建新的。
+  没有这一步的话，「加入方自己重启桌面端」会在屋里留下两个同名的他 ——
+  旧那组得等 `idle`（45s）才被扫掉，而这段时间里 @ 到旧的必然超时（那台机器已经不在了）。
+  旧版本加入方不带这个字段，行为退回「等清扫」，不会因此连不进来；
 - 宿主解散房间后，加入方投影里就没有那间屋了。此时镜像不删，改成墓碑（`room.remote.lost`），
   输入锁住、只留「从列表移除」——否则用户会卡在一个发不出话也退不出的房间里。
 
@@ -194,7 +199,7 @@ DSH 自己的端口是 loopback + cookie + 每进程随机 token，**不能**拿
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| POST | `/lan/join` | `{code, machine, self, agents}` → `{peerId, selfMemberId, snapshot}` |
+| POST | `/lan/join` | `{code, machine, self, agents, build, instance}` → `{peerId, selfMemberId, snapshot}`（同 `instance` 视为同一条 link 回来了，旧那组让位） |
 | GET | `/lan/state?peerId=&since=` | 长轮询（25s），房间投影 + revision |
 | POST | `/lan/message` | `{peerId, text, opKey}` → 以该 peer 的人身份发言，回投影 |
 | GET | `/lan/assignments?peerId=` | 长轮询（25s），领取一条待执行的 agent 回合 |

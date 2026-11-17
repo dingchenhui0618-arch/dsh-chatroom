@@ -330,6 +330,57 @@ test('宿主重启后旧凭据失效：加入方不用手动重连，下一次�
   }
 })
 
+test('加入方的桌面端重启：屋里不会同时坐着两个他，旧那组当场让位', async () => {
+  const host = await boot('host-guest-restart', { reply: '宿主这边：回来了。' })
+  const first = await boot('guest-guest-restart', { reply: '重启之后还是我。' })
+  let restarted = null
+  try {
+    const created = await command(host, 'room.create', { name: '重启的客' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(first, 'self.rename', { name: '周荻' })
+    await command(first, 'room.create', { name: '客' })
+    await command(first, 'member.createBot', { roomId: (await snapshot(first)).rooms[0].id, name: '阿丙', role: '库存' })
+    await command(first, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+    const beforeView = await snapshot(host)
+    const before = beforeView.rooms.find((room) => room.id === roomId)
+    assert.equal(before.members.length, 3, '先确认屋里是：我、周荻、阿丙')
+    const oldPeerId = beforeView.lan.peers[0].id
+
+    // 桌面端重启：不 leave，关掉这一代，用同一份 profile 再 apply 一次。
+    // 加入方的 link 是落盘的，所以它自己会重新握手 —— 宿主必须认得出这是同一个人。
+    await first.dispose()
+    const second = fakeCtx(first.dir, { reply: '重启之后还是我。' })
+    restarted = { ...second, dispose: await apply(second.ctx) }
+
+    // 认新身份而不是「只剩一份」：重新握手之前，屋里本来就只有旧那组一份，
+    // 只看数量会让断言在重启生效前就通过。
+    const settled = await until(async () => {
+      const view = await snapshot(host)
+      const room = view.rooms.find((row) => row.id === roomId)
+      const zhou = room.members.filter((row) => row.name === '周荻')
+      const bing = room.members.filter((row) => row.name === '阿丙')
+      const fresh = view.lan.peers.length === 1 && view.lan.peers[0].id !== oldPeerId
+      return fresh && zhou.length === 1 && bing.length === 1 ? { room, view } : null
+    }, { timeoutMs: 6000, label: '宿主把旧那组让位，只留一份' })
+    assert.equal(settled.room.members.length, 3, '重启不该在屋里多留一组人')
+    assert.equal(settled.view.lan.peers[0].canAgents, true, '重新握手也要带上能力位')
+
+    // 让位之后派发要落在新的那组上：不然「回来的那个人」看着在线，@ 他必然超时。
+    await command(host, 'msg.send', { roomId, text: '@阿丙 重启之后还在吗？' })
+    const reply = await until(async () => {
+      const room = (await snapshot(host)).rooms.find((row) => row.id === roomId)
+      return room.messages.find((message) => message.authorName === '阿丙')
+    }, { label: '重启后的 agent 仍能被派发' })
+    assert.match(reply.text, /重启之后还是我/)
+    assert.equal(reply.authorId, settled.room.members.find((row) => row.name === '阿丙').id, '回话的是新那组成员')
+  } finally {
+    await (restarted ? restarted.dispose() : Promise.resolve()).catch(() => {})
+    await first.dispose().catch(() => {})
+    await host.dispose().catch(() => {})
+  }
+})
+
 test('宿主解散房间：加入方留一张能清理的墓碑，不是发不出话也退不出的死胡同', async () => {
   const host = await boot('host-dissolve')
   const guest = await boot('guest-dissolve')

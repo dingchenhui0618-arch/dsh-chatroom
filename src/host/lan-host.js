@@ -316,12 +316,29 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return { ...stat, snapshot: viewFor(peer) }
   }
 
-  function joinRoom({ code, machine: guestMachine, self, agents, build }, address) {
+  function joinRoom({ code, machine: guestMachine, self, agents, build, instance: rawInstance }, address) {
     const wanted = String(code ?? '').trim().toUpperCase()
     if (!wanted) fail('code_required', '房间码不能为空。')
     const room = store.state.rooms.find((row) => String(row.code ?? '').toUpperCase() === wanted)
     if (!room) fail('room_not_found', '房间码不对，或这台机器上没有这间屋子。')
     if (room.remote) fail('remote_room', '这是从别的机器同步过来的房间，不能在这里再当宿主。')
+
+    /**
+     * 同一条 link 回来了（桌面端重启、插件重载）：把上一代那一组整组让出来。
+     *
+     * 加入方的 link 是落盘的，重启之后拿同一个 id 重新握手；不认它的话，宿主这边
+     * 会多出一组「另一个他」——旧那组要等 peerIdle（45s）才被扫掉，而这段时间屋里
+     * 有两个同名的人，@ 到旧的那个还必然超时（那台机器已经不在了）。
+     */
+    const instance = String(rawInstance ?? '').trim().slice(0, 64)
+    if (instance) {
+      for (const other of [...peers.values()]) {
+        if (other.roomId !== room.id || other.instance !== instance) continue
+        peers.delete(other.id)
+        store.commit((draft) => removePeer(draft, { roomId: room.id, peerId: other.id }))
+        log('lan_peer_takeover', { machine: other.machine, address: other.address })
+      }
+    }
 
     const peerId = `p_${randomUUID().replace(/-/g, '').slice(0, 16)}`
     const label = String(guestMachine ?? '').trim().slice(0, 64) || address
@@ -334,6 +351,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       since: Date.now(),
       lastSeen: Date.now(),
       agents: [],
+      instance: instance || null,
       // 旧版加入方不会带这个字段：屋里只有他一个人时，界面要能分清是他还没建 agent
       // 还是那台根本报不了。Number(undefined) 是 NaN，比较结果为 false，正好落在「报不了」。
       canAgents: Number(build?.agents) >= 1,
