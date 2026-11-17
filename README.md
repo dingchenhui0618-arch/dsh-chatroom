@@ -213,18 +213,25 @@ token 烧光的唯一闸门。
 ```bash
 curl -s http://10.0.51.18:4399/lan/ping
 # {"ok":true,"value":{"ok":true,"hostMachine":"…","serving":true,
-#   "code":{"version":"0.1.0","loadedAt":"2026-11-17T06:50:12.345Z",
-#           "newestMtime":"2026-11-17T06:41:52.315Z","stale":false}}}
+#   "code":{"version":"0.1.0","loadedAt":"2026-11-17T11:23:28.880Z",
+#           "appliedAt":"2026-11-17T11:24:02.191Z",
+#           "newestMtime":"2026-11-17T11:23:54.391Z","stale":false}}}
 ```
 
-`loadedAt` 是**这份代码进进程的那一刻**，`newestMtime` 是宿主文件在磁盘上最新的改动时间；
+`loadedAt` 是这份代码第一次进进程的时刻，`appliedAt` 是**插件最近一次被装载 / 重载**的时刻
+（每次关开都会往前走），`newestMtime` 是宿主文件在磁盘上最新的改动时间；
 `stale: true` 就是在说「磁盘上已经有内存里没有的改动，得重载或重启」。插件装在 profile 里
 是一份拷贝或 junction，改了文件不等于跑着的进程换了代码 —— 这一条能把「没修好」和
 「修了但没生效」分开。探针**每次都重新看磁盘**（不是拿装载那一刻的快照）：
 刚装好时是 `false`，改了文件再探一次就翻成 `true`，恢复文件时间又落回 `false`。
 
+判「换没换」要看 `appliedAt` 而不是 `loadedAt`：热重载只重新求值**改过**的文件，没改的模块
+（包括算这个时间戳的那个）留的是上一次的实例 —— 实测只改 `lan-guest.js` 时 `loadedAt` 一直
+停在老时间上（`11:23:28.880Z`，中间重载过三次都没动），只有 `appliedAt` 在往前走
+（`11:23:29Z → 11:23:48Z → 11:24:02Z`）。`stale` 就是拿 `newestMtime` 跟 `appliedAt` 比的。
+
 `stale: true` 之后怎么让它重新装载：**设置 → 插件里把 `dsh-chatroom` 关掉再打开**即可，
-不用重启整个桌面端（实测：关掉后 4399 立刻关闭；再打开 `loadedAt` 变成那一刻、`stale`
+不用重启整个桌面端（实测：关掉后 4399 立刻关闭；再打开 `appliedAt` 变成那一刻、`stale`
 回到 `false`，`shell.overlay` 里的 `chatroom-float` 也重新注册成 active）。这是拿真实
 profile 验的：那个进程从 17:28 一直跑着，磁盘上 18:16 之后修的东西一件都没进去 —— 而它
 自己那份探针还是旧的、只会报装载那一刻的快照，所以看起来一切正常；换成当前代码后，
@@ -330,8 +337,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 「我的 agent」在真实渲染里能建能删，「补进来的远程 agent」在成员列里认得出机器 | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'bring-agent'`：断言空手加入后补建的 `库存 agent` 出现在成员列且带 `LAN`、`title` 含「陈默的 ThinkPad」、它的回复 chip 也含那台机器名；再在左栏建一个临时 agent（成员列与「我的 agent」同时出现）、点 × 删掉（两处同时消失） |
 | **版本不一致分得清**（旧版本那台进屋时带不了 agent：宿主看得出它「报不了名单」，而不是以为「它没建」） | ✅ 已验证（真 HTTP） | `test/lan-agents.test.mjs` 第 5 条：按老协议手写 `POST /lan/join`（不带 `build` 能力位）→ 宿主 `lan.peers` 里那台 `canAgents === false`、`agents` 为空；同一间屋里新版本加入方是 `true`。反证在界面上：`verify: 'old-peer'` 断言成员列下方出现警示行、含「旧版本」与「重启」 |
 | **加入方撞上旧版本宿主**（没有 `/lan/agents`：不炸、不把 404 当网络故障反复重试） | ✅ 已验证（真 HTTP） | 同上第 6 条：用一个只对 `/lan/agents` 回 404 的代理当「旧宿主」，加入方 `bot.create` 后 `links[0].hostOld === true`、本机 agent 照建、宿主那边成员一个没多 |
-| **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 3 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true；探针 `codeStatus()` **每次都重读磁盘**（拷一份到临时目录改 mtime，不重新装载也当场翻成过期，静态快照不动）。`/lan/ping` 一并带出 `version` / `loadedAt` / `newestMtime` / `stale`，真实 HTTP 上验过 false→true→false |
-| **装了新版怎么让跑着的进程换代码**（不重启桌面端） | ✅ 已验证（真实 profile） | 在设置 → 插件里把 `dsh-chatroom` 关掉再打开：4399 立刻关闭 → 再打开后 `/lan/ping` 的 `loadedAt` 变成那一刻（`11:09:27Z`）、`newestMtime` 是磁盘上最新的改动、`stale: false`；`shell.overlay` 里 `chatroom-float` 重新注册成 active。改一个文件再探翻成 `stale: true`（`11:09:06Z`），重新装载一次又回到 `false` |
+| **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 4 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true；探针 `codeStatus()` **每次都重读磁盘**（拷一份到临时目录改 mtime，不重新装载也当场翻成过期，静态快照不动）；**热重载之后 `stale` 落回 false** —— 判据是 apply 推的 `appliedAt`，不是模块自己的求值时间（旧写法下这条红：只改别的模块再重载，`loadedAt` 不动，探针会一直喊过期）。`/lan/ping` 一并带出 `version` / `loadedAt` / `appliedAt` / `newestMtime` / `stale`，真实 HTTP 上验过 false→true→false |
+| **装了新版怎么让跑着的进程换代码**（不重启桌面端） | ✅ 已验证（真实 profile） | 在设置 → 插件里把 `dsh-chatroom` 关掉再打开：4399 立刻关闭 → 再打开后 `/lan/ping` 的 `appliedAt` 变成那一刻、`newestMtime` 是磁盘上最新的改动、`stale: false`；`shell.overlay` 里 `chatroom-float` 重新注册成 active。改一个文件再探翻成 `stale: true`，重新装载一次又回到 `false`。同一份 profile 上连开三轮：`loadedAt` 一直停在 `11:23:28.880Z`（没改过的模块不重新求值），`appliedAt` 依次 `11:23:29Z → 11:23:48Z → 11:24:02Z`；中间把 `lan-guest.js` 按原字节重写（只动 mtime）→ `stale: true`，再重载 → `false`。从 WSL2 走 `10.0.51.18:4399` 读到的是同一份 JSON |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
 | **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
@@ -367,7 +374,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 重连退避 + LAN 抗坏包 + 邀请地址排序 + 代码指纹 + 协议面 + 客户端装载 + 包清单（68 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 重连退避 + LAN 抗坏包 + 邀请地址排序 + 代码指纹 + 协议面 + 客户端装载 + 包清单（69 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

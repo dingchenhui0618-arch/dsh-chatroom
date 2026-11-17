@@ -19,6 +19,7 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 test('代码指纹：版本与包清单一致，刚装载的这份不算过期', () => {
   assert.equal(code.version, pkg.version)
   assert.match(code.loadedAt, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/, '装载时间应是 ISO 时间戳')
+  assert.equal(code.appliedAt, code.loadedAt, '还没跑过 apply 时，最近一次装载就是进进程那一刻')
   assert.ok(code.newestMtime, '要读得到宿主文件在磁盘上的最新改动时间')
   assert.equal(code.stale, false, '刚从磁盘装载的代码不该判成过期')
 })
@@ -38,6 +39,38 @@ test('代码指纹：磁盘上出现比内存更新的文件时，自己会报�
     )
   } finally {
     utimesSync(target, before.atime, before.mtime)
+  }
+})
+
+test('代码指纹：热重载之后 stale 落回 false —— 判据是「最近一次装载」，不是这个模块自己的求值时间', async () => {
+  // 实测踩过：只改了 lan-guest.js，关开插件（4399 关了又开，apply 真的跑了一遍），
+  // 可 code.js 自己没改过、不会被重新求值，loadedAt 停在老时间上 —— 于是探针一直喊
+  // stale:true，「换成功了」看起来像「没换」。判据必须是 apply 推的 appliedAt。
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-stamp-reload-'))
+  try {
+    await cp(new URL('../src/host/', import.meta.url), join(dir, 'src', 'host'), { recursive: true })
+    await cp(new URL('../lib/index.js', import.meta.url), join(dir, 'lib', 'index.js'))
+    await cp(new URL('../package.json', import.meta.url), join(dir, 'package.json'))
+    const mod = await import(pathToFileURL(join(dir, 'src', 'host', 'code.js')).href)
+    assert.equal(mod.codeStatus().stale, false)
+
+    // 改一个「别的」模块：磁盘上比装载新，但没超过 1 秒余量时还不算过期。
+    const target = join(dir, 'src', 'host', 'lan-guest.js')
+    const later = new Date(Date.now() + 1200)
+    utimesSync(target, later, later)
+    assert.equal(mod.codeStatus().stale, true, '磁盘上出现了比装载更新的改动')
+
+    // 等过余量之后重载一次：这时候磁盘上的改动确实已经进了内存，不该再说「没换」。
+    await new Promise((resolve) => setTimeout(resolve, 1700))
+    mod.markApplied()
+    const now = mod.codeStatus()
+    assert.equal(now.stale, false, '重载过了就不该再说磁盘上的代码没进内存')
+    assert.ok(
+      Date.parse(now.appliedAt) > Date.parse(now.loadedAt),
+      '重载时间往前走，装载时间留的是第一次进进程的时刻',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })
 

@@ -16,6 +16,7 @@ import {
 import { createBotRunner } from './turn.js'
 import { createSpeaker } from './speak.js'
 import { createLanBridge } from './lan-bridge.js'
+import { markApplied } from './code.js'
 import { project } from './project.js'
 
 export { project } from './project.js'
@@ -441,6 +442,9 @@ export function apply(ctx) {
       // LAN 监听起不来（端口被占）不该让整个插件失败：本机房间照常能用，
       // 只是「加入 / 邀请」栏会显示具体原因。
       await lan.start()
+      // 这一份实例从此刻起在跑：探针要拿这个时间去比磁盘，别用模块自己的求值时间
+      // （热重载只重新求值改过的文件，没改的模块时间会一直停在老地方）。
+      markApplied()
       return async () => {
         closed = true
         await lan.dispose()
