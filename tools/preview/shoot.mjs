@@ -602,8 +602,66 @@ try {
         { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
         sessionId,
       )
+      await sleep(300)
+
+      // 5. 收起成胶囊以后那颗胶囊也得能拖。收起态是另一个 DOM（.cr-float-pill），
+      //    拖动监听要是跟着 floatOpen 一起关掉，这里就一步也拖不动。
+      await evaluate(cdp, sessionId, `(() => {
+        const close = document.querySelector('.cr-float-head .cr-icon-btn')
+        if (!close) return false
+        close.click()
+        return true
+      })()`)
+      await waitForSelector(cdp, sessionId, '.cr-float-pill')
+      const pillDrag = await evaluate(cdp, sessionId, `(() => {
+        const pill = document.querySelector('.cr-float-pill')
+        if (!pill) return 'no-pill'
+        const box = pill.getBoundingClientRect()
+        const at = (x, y) => ({ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 })
+        // 只抖 2px 不能算拖：那一下松手要按点击处理，点一下才是展开。
+        const wobble = { x: box.left + 20, y: box.top + 16 }
+        pill.dispatchEvent(new PointerEvent('pointerdown', at(wobble.x, wobble.y)))
+        window.dispatchEvent(new PointerEvent('pointermove', at(wobble.x + 2, wobble.y + 2)))
+        window.dispatchEvent(new PointerEvent('pointerup', at(wobble.x + 2, wobble.y + 2)))
+        if (document.querySelector('.cr-float-card')) return 'wobble-opened'
+        const held = pill.getBoundingClientRect()
+        if (Math.abs(held.left - box.left) > 1 || Math.abs(held.top - box.top) > 1) return 'wobble-moved'
+        // 真正的拖动：抓住胶囊拖到 (320, 300)，抓手偏移是 (20, 16)。
+        pill.dispatchEvent(new PointerEvent('pointerdown', at(held.left + 20, held.top + 16)))
+        window.dispatchEvent(new PointerEvent('pointermove', at(held.left + 24, held.top + 20)))
+        window.dispatchEvent(new PointerEvent('pointermove', at(320, 300)))
+        window.dispatchEvent(new PointerEvent('pointerup', at(320, 300)))
+        return 'ok'
+      })()`)
+      if (pillDrag !== 'ok') throw new Error(`收起态的胶囊拖不动：${pillDrag}`)
+      await sleep(250)
+      const pillBox = await boundsOf(cdp, sessionId, '.cr-float-pill')
+      if (!pillBox) throw new Error('拖完以后找不到胶囊')
+      if (Math.abs(pillBox.left - 300) > 2 || Math.abs(pillBox.top - 284) > 2) {
+        throw new Error(`胶囊没有跟着手指走：${JSON.stringify(pillBox)}`)
+      }
+      assertInside(pillBox, '胶囊被拖到视口外')
+      const savedPill = JSON.parse(
+        (await evaluate(cdp, sessionId, `localStorage.getItem('dsh-chatroom:float-pos:v1')`)) || 'null',
+      )
+      if (!savedPill || Math.abs(savedPill.x - 300) > 2 || Math.abs(savedPill.y - 284) > 2) {
+        throw new Error(`胶囊的位置没有存下来：${JSON.stringify(savedPill)}`)
+      }
+      // 从拖过去的胶囊展开：窗口要开在原地，不能跳回右下角。
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-float-pill').click()`)
+      await waitForSelector(cdp, sessionId, '.cr-float-card')
+      const openedAt = await boundsOf(cdp, sessionId, '.cr-float-card')
+      if (!openedAt || Math.abs(openedAt.left - 300) > 2 || Math.abs(openedAt.top - 284) > 2) {
+        throw new Error(`从拖过去的胶囊展开后没留在原地：${JSON.stringify(openedAt)}`)
+      }
+
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+        sessionId,
+      )
       await evaluate(cdp, sessionId, `localStorage.removeItem('dsh-chatroom:float-pos:v1')`)
-      console.log('verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内')
+      console.log('verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内、收起成胶囊也拖得动')
     }
     await cdp.send('Target.closeTarget', { targetId })
   }

@@ -37,13 +37,13 @@
 
 ![加入方视角](docs/guest.png)
 
-**同一间屋子，另一台机器上看到的视角**：它自己的人和 agent 标 `本机`，宿主的成员标
-`LAN · 林岸的 MacBook`，标题栏写「由 林岸的 MacBook」；规则与成员由对端管理，这边只能发言。
+**同一间屋子，另一台机器上看到的视角**：它自己的人和 agent 不贴标签（本机就是默认），
+宿主的成员标 `LAN · 林岸的 MacBook`，标题栏写「由 林岸的 MacBook」；规则与成员由对端管理，这边只能发言。
 
 ![悬浮窗](docs/float.png)
 
-**会话界面里的独立悬浮窗**：标题栏右侧的开关拉起，可拖动、可折叠，Enter 直接发；
-远程成员的消息在浮窗里同样带 `LAN + 机器名`，不用点进面板也能分清是谁在说。
+**会话界面里的独立悬浮窗**：标题栏右侧的开关拉起，可拖动、可折叠，Enter 直接发；收起成胶囊以后
+那颗胶囊同样拖得动，点一下才展开。远程成员的消息在浮窗里同样带 `LAN + 机器名`，不用点进面板也能分清是谁在说。
 
 ![消息提醒](docs/notify.png)
 
@@ -57,7 +57,7 @@
 **三台机器同屋**（宿主视角）：本机的「林岸 + 两个 agent」，加上两台用房间码进来的机器 ——
 周荻的 MacBook（周荻 + 尾货 agent）、陈默的 ThinkPad（陈默 + 库存 agent）。
 每一条消息和每一个成员都标到**机器**，不是笼统的一个「LAN」：`LAN · 周荻的 MacBook` /
-`LAN · 陈默的 ThinkPad`，本机的成员照旧标 `本机`。这张图不是摆拍：第三个进程真的握手、真的发言，
+`LAN · 陈默的 ThinkPad`，本机的成员不贴标签（不标才是本机）。这张图不是摆拍：第三个进程真的握手、真的发言，
 宿主那句 `@库存 agent 有多少能赶上 11/11 清？` 也是真的被派发到第三台机器上跑完再回传的。
 
 ![宿主解散后的加入方](docs/gone.png)
@@ -77,6 +77,22 @@
 > 截「已解散」那张之前，预览服务器会先调一次宿主的 `room.dissolve`（走插件自己的 command，不是摆拍），
 > 等加入方自己认出「屋子没了」，再截。
 > 复现：`npm run preview:build && npm run preview:serve && npm run preview:shots`。
+
+### 界面规格
+
+面板只有三样东西：一条发丝线分层、一处品牌色、一套间距。写样式前先把变量钉死：
+
+- **颜色 / 间距 / 圆角先落 token**：`.cr-main` / `.cr-float` / `.cr-toast-wrap` 上定义
+  `--cr-fg / --cr-muted / --cr-line / --cr-surface / --cr-accent / --cr-hover / --cr-raised / --cr-r / --cr-s1..s5`，
+  组件里只引用变量。取值优先用宿主的 `--dsw-alias-*`，取不到才退回中性值 —— 明暗主题不需要各写一套。
+- **间距只走 4/8 栅格**（4 / 8 / 12 / 16 / 24），字号只有 11 / 12 / 13 / 14 四档，圆角只有 8 / 12 两档。
+  原来散在组件里的 2 / 6 / 10 / 13 这类数字已经全部收掉。
+- **不做盒子套盒子**：规则区、邀请条、agent 表单从「描边小卡片」改成发丝线分隔的段落；
+  选中的房间只加一条 2px 品牌色竖条，不给整块描边；消息之间只留空白，不画气泡。
+- **本机是默认状态，不给它贴标签**：只有 `LAN · 机器名` 带色块。成员副标题只放有信息量的东西 ——
+  agent 放职责，跨机器的那位放他用的机器名，本机的人就一行名字。消息行同理，不再重复一个 `agent` 标签。
+- **两个抓手都能拖**：展开的标题栏和收起后的胶囊共用一套拖动逻辑（抓手处是点阵纹理 + `cursor:grab`），
+  拖动中夹在视口内，松手写 `localStorage`，双击标题栏回到右下角；胶囊上单点仍是展开。
 
 ## 它解决什么
 
@@ -225,7 +241,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
-| 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 四条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900） |
+| 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内 / 收起成胶囊也拖得动） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 五条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900），而胶囊那条在旧代码上一步也拖不动（拖动监听跟着 `floatOpen` 一起关掉了） |
 | 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/gone.png` |
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
