@@ -18,6 +18,15 @@ export const fail = (code, message) => {
   throw Object.assign(new Error(message ?? code), { code })
 }
 
+/**
+ * 我这份插件有哪些接口能力。跟着 /lan/join 上报给宿主。
+ *
+ * 老版本不会带这个字段，而它既没有「加入之后补报 agent」的接口、也没有那个界面 ——
+ * 于是那台机器进来时屋里就是只有一个人。宿主拿到能力位就能直接说清
+ * 「这台是旧版本，重启它的桌面端」，而不是让人对着一张缺了 agent 的成员列猜。
+ */
+export const BUILD = { agents: 1 }
+
 /** 本机在局域网里的 IPv4 地址。公网/回环/虚拟网卡不在这里筛，界面自己决定怎么显示。 */
 export function lanAddresses() {
   const out = []
@@ -71,6 +80,9 @@ async function request(url, { method = 'GET', body, timeoutMs = 20_000, signal }
     }
     fail('lan_unreachable', `连不上 ${url}（${String(error?.cause?.code ?? error?.message ?? error)}）。`)
   }
+  // 老版本没有这个端点：404 归成「对方插件版本太旧」，上层才能说清原因，
+  // 而不是报一句笼统的 lan_bad_response。
+  if (response.status === 404) fail('not_found', '对方那台机器的插件版本没有这个接口。')
   let payload
   try {
     payload = await response.json()

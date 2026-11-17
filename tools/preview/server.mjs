@@ -133,10 +133,12 @@ function serve(side, port, { nudge = null } = {}) {
       if (nudge && url.pathname === '/preview/tidy') {
         usage.writes += 1
         const view = host.snapshot()
-        const demo = view.rooms.find((row) => row.name === '带人进屋')
-        if (demo) await host.command({ action: 'room.dissolve', input: { roomId: demo.id } })
+        const demo = ['带人进屋', '半新半旧']
+          .map((name) => view.rooms.find((row) => row.name === name))
+          .filter(Boolean)
+        for (const room of demo) await host.command({ action: 'room.dissolve', input: { roomId: room.id } })
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: Boolean(demo), roomId: demo?.id ?? null }))
+        res.end(JSON.stringify({ ok: demo.length > 0, rooms: demo.map((room) => room.id) }))
         return
       }
 
@@ -146,6 +148,16 @@ function serve(side, port, { nudge = null } = {}) {
         const brought = await host.bringAgent()
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, rooms: brought.snapshot.rooms.length }))
+        return
+      }
+
+      // 截图用：让一台旧版本的机器真进来（老协议的 body，没有能力位也没有 agent），
+      // 好去截「版本不一致时界面怎么说」那一屏。
+      if (nudge && url.pathname === '/preview/old-peer') {
+        usage.writes += 1
+        const old = await host.oldPeer()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, rooms: old.snapshot.rooms.length }))
         return
       }
 

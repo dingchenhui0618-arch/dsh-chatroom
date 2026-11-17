@@ -207,6 +207,14 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           address: peer.address,
           roomId: peer.roomId,
           agents: peer.agents.map((agent) => agent.name),
+          /**
+           * 这台机器报过来说「我能补报 agent」吗。
+           *
+           * 它进来时一个 agent 都没带，有两种完全不同的原因：本机真的还没建
+           * （人该去那台机器的左栏建一个），或者那台的插件是旧版本、根本没有补报这条路
+           * （人该重启那台的桌面端）。少了这个能力位，界面只能沉默。
+           */
+          canAgents: Boolean(peer.canAgents),
           since: peer.since,
           lastSeen: peer.lastSeen,
         })),
@@ -297,6 +305,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
 
   /** 加入之后补报名单走这里：对账 + 把新投影回给那台机器。 */
   function syncAgents(peer, agents) {
+    // 能走到这个端点本身就是证明：这台机器有补报的路（能力位在旧版加入方那边永远是空的）。
+    peer.canAgents = true
+    peer.lastSeen = Date.now()
     let stat = { added: 0, updated: 0, removed: 0 }
     store.commit((draft) => {
       stat = reconcileAgents(draft, peer, agents, { kind: 'lan', peer: peer.address, machine: peer.machine })
@@ -305,7 +316,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return { ...stat, snapshot: viewFor(peer) }
   }
 
-  function joinRoom({ code, machine: guestMachine, self, agents }, address) {
+  function joinRoom({ code, machine: guestMachine, self, agents, build }, address) {
     const wanted = String(code ?? '').trim().toUpperCase()
     if (!wanted) fail('code_required', '房间码不能为空。')
     const room = store.state.rooms.find((row) => String(row.code ?? '').toUpperCase() === wanted)
@@ -323,6 +334,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       since: Date.now(),
       lastSeen: Date.now(),
       agents: [],
+      // 旧版加入方不会带这个字段：屋里只有他一个人时，界面要能分清是他还没建 agent
+      // 还是那台根本报不了。Number(undefined) 是 NaN，比较结果为 false，正好落在「报不了」。
+      canAgents: Number(build?.agents) >= 1,
     }
     const origin = { kind: 'lan', peer: address, machine: label }
     // 对面没报名字（或跟本机同名）时用机器名兜底：屋里出现两个「我」，

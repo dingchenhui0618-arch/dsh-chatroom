@@ -320,6 +320,58 @@ export async function bootFixture({ port } = {}) {
       pinTimes(guest.store)
       return { snapshot: side.snapshot(), guest }
     },
+    /**
+     * 截「版本不一致」用：一台旧版本的机器进来。
+     *
+     * 老机器既没有补报 agent 的接口、也没有那个界面，进屋时屋里就只有他一个人。
+     * 这里按老协议的 body 真握手（没有 build 能力位、没有 agent 名单），
+     * 宿主应当据能力位直说「这台是旧版本，重启那台的桌面端」——
+     * 而不是让人对着一张缺了 agent 的成员列猜上半天。
+     */
+    async oldPeer() {
+      const created = await side.command({
+        action: 'room.create',
+        input: { name: '半新半旧', topic: '两台机器的插件版本不一样，agent 带不过来' },
+      })
+      const target = created.rooms.find((row) => row.name === '半新半旧')
+      if (!target) throw new Error('没能开出「半新半旧」这间屋子')
+      side.store.commit((draft) => {
+        const fresh = draft.rooms.find((row) => row.id === target.id)
+        if (fresh) {
+          fresh.code = 'P5TD2K'
+          draft.activeRoomId = fresh.id
+        }
+      })
+      const port = side.lan.status().port
+      const joined = await fetch(`http://127.0.0.1:${port}/lan/join`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        // 老版本就是这么报的：没有 build（能力位），也没有 agent 名单可报。
+        body: JSON.stringify({
+          code: 'P5TD2K',
+          machine: '阿青的 Surface',
+          self: { id: 'u_old', name: '阿青' },
+          agents: [],
+        }),
+      })
+      const value = await joined.json()
+      if (!value.ok) throw new Error(`旧版本机器加入失败：${JSON.stringify(value.error)}`)
+      await fetch(`http://127.0.0.1:${port}/lan/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          peerId: value.value.peerId,
+          text: '我这台还是上周装的版本，先听你们说；agent 等我把桌面端重启了再带进来。',
+        }),
+      })
+      // 宿主这边接一句：说明「重启完再进来，agent 会自己补上来」——旧版本做不到的是报名单，不是进屋。
+      await side.command({
+        action: 'msg.send',
+        input: { roomId: target.id, text: '行，你先听。重启完再进一次，agent 会自己补上来；不重启它报不过来。' },
+      })
+      pinTimes(side.store)
+      return { snapshot: side.snapshot() }
+    },
   }
 }
 

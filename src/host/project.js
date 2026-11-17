@@ -32,6 +32,8 @@ export function project(state, extra = {}) {
       localRoomId: link.localRoomId,
       status: link.status ?? 'online',
       error: link.error ?? null,
+      // 对面是旧版本（没有 /lan/agents）：界面要说清「agent 名单报不过去，得重启那台」。
+      hostOld: link.hostOld === true,
     })),
     bots: state.bots.map((bot) => ({
       id: bot.id,

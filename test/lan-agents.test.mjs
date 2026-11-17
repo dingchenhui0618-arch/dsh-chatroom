@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -42,6 +43,35 @@ const command = async (side, action, input = {}) => {
 const roomById = (view, roomId) => view.rooms.find((room) => room.id === roomId)
 const mirrorOf = (view) => view.rooms.find((room) => room.remote)
 const byName = (room, name) => room.members.find((member) => member.name === name)
+
+/** 老版本宿主：除了 /lan/agents 什么都转发，那个端点回 404（旧版根本没有它）。 */
+async function legacyProxy(target) {
+  const server = createServer(async (request, response) => {
+    if (request.url === '/lan/agents') {
+      response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: { code: 'not_found', message: '没有这个端点。' } }))
+      return
+    }
+    try {
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const body = chunks.length ? Buffer.concat(chunks) : undefined
+      const upstream = await fetch(`${target}${request.url}`, {
+        method: request.method,
+        headers: { 'content-type': 'application/json' },
+        body,
+      })
+      const text = await upstream.text()
+      response.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(text)
+    } catch (error) {
+      response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: false, error: { code: 'proxy_failed', message: String(error?.message) } }))
+    }
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return { server, port: server.address().port }
+}
 
 /** 宿主开一间屋；另一台机器一个 agent 都没有，直接加入（新装的那台就是这样）。 */
 async function setup({ hostReply = '宿主这边：数对得上。', guestReply = '补上来的 agent 也能跑。' } = {}) {
@@ -168,6 +198,73 @@ test('补报进来的 agent 真能被派发：宿主 @ 它，在那台机器上�
     assert.match(guest.prompts[0].text, /以「阿乙」的身份/)
   } finally {
     await guest.dispose().catch(() => {})
+    await host.dispose().catch(() => {})
+  }
+})
+
+test('旧版本那台进来：宿主看得出它报不了 agent 名单，和「还没建」分得清', async () => {
+  const host = await boot('host')
+  const guest = await boot('guest')
+  try {
+    const created = await command(host, 'room.create', { name: '版本对账', topic: '分清旧版本和没建' })
+    const { code } = created.rooms[0]
+    const port = (await snapshot(host)).lan.port
+
+    // 老版本的加入方：手写协议，body 里没有 build —— 它既没有补报接口，也没有那个界面。
+    const response = await fetch(`http://127.0.0.1:${port}/lan/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, machine: 'OLD-MACHINE', self: { id: 'u_old', name: '老机器' }, agents: [] }),
+    })
+    const body = await response.json()
+    assert.equal(body.ok, true, JSON.stringify(body.error))
+
+    const old = (await snapshot(host)).lan.peers.find((peer) => peer.machine === 'OLD-MACHINE')
+    assert.ok(old, '宿主应该记得这台机器')
+    assert.equal(old.canAgents, false, '没带能力位 = 旧版本，界面要能直说要重启那台')
+    assert.deepEqual(old.agents, [], '它也确实一个 agent 都没带')
+
+    // 新版加入方：走真实的 lan.join（带 build），能力位是 true。
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code, machine: 'NEW-MACHINE' })
+    const fresh = (await snapshot(host)).lan.peers.find((peer) => peer.machine === 'NEW-MACHINE')
+    assert.equal(fresh.canAgents, true, '新版报得上能力位')
+    assert.deepEqual(fresh.agents, [])
+
+    // 加入方这边：对面是正经新版，hostOld 不该亮。
+    assert.equal((await snapshot(guest)).links[0].hostOld, false)
+  } finally {
+    await guest.dispose().catch(() => {})
+    await host.dispose().catch(() => {})
+  }
+})
+
+test('撞上旧版本宿主（没有补报接口）：不炸、不重试到天荒地老，而是记下「对面旧」让界面说清', async () => {
+  const host = await boot('host')
+  const guest = await boot('guest')
+  const proxy = await legacyProxy(`http://127.0.0.1:${(await snapshot(host)).lan.port}`)
+  try {
+    const created = await command(host, 'room.create', { name: '半新半旧', topic: '' })
+    const { code } = created.rooms[0]
+    // 加入方以为自己在跟一台旧宿主打交道（404 就来自那条链路）。
+    await command(guest, 'lan.join', { host: '127.0.0.1', port: proxy.port, code, machine: 'NEW-MACHINE' })
+    const mirror = mirrorOf(await snapshot(guest))
+    assert.ok(mirror, '手还是握上了：只有补报那一步是新接口')
+
+    await command(guest, 'bot.create', { name: '阿乙', role: '盯库存', roomId: mirror.id })
+
+    const link = (await snapshot(guest)).links[0]
+    assert.equal(link.hostOld, true, '404 要落成「宿主的插件是旧版本」')
+    assert.equal((await snapshot(guest)).bots.some((bot) => bot.name === '阿乙'), true, '本机这边照建不误')
+
+    // 宿主那边确实没收到：屋里还是两个人，而且没有任何补报上来的成员。
+    const room = roomById(await snapshot(host), created.rooms[0].id)
+    assert.equal(room.members.filter((member) => member.kind === 'bot').length, 0)
+  } finally {
+    // 先让加入方停下（它那条 /lan/state 长轮询还挂在代理上），
+    // 否则 server.close() 会等这条连接，测试进程永远退不出去。
+    await guest.dispose().catch(() => {})
+    proxy.server.closeAllConnections?.()
+    await new Promise((resolve) => proxy.server.close(resolve))
     await host.dispose().catch(() => {})
   }
 })

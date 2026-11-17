@@ -104,6 +104,15 @@ const shots = [
     caption: '加入之后才建的 agent：那台机器把名单报上来，宿主这边立刻多一个人，@ 它还能跨机跑一轮',
   },
   {
+    name: 'old-peer',
+    view: 'panel',
+    setup: '/preview/old-peer',
+    waitFor: '.cr-peer',
+    settle: 'read',
+    verify: 'old-peer',
+    caption: '版本不一致：进来的那台是旧版本，界面直说「报不了 agent 名单、重启那台的桌面端」，而不是让人猜',
+  },
+  {
     name: 'retry',
     view: 'panel',
     setup: '/preview/fail',
@@ -678,6 +687,36 @@ try {
       // 这一屏专开的演示例房间收掉：后面的截图不该带着上一屏的故事。
       await fetch(`http://127.0.0.1:${port}/preview/tidy`)
       console.log('verified — 空手加入的机器补建 agent：成员列当场多一个 LAN·陈默的 ThinkPad，@ 它能跑一轮；左栏能建能删')
+    }
+    // 两台机器的插件版本不一样：老机器报不了 agent 名单，界面必须说清是哪台、该做什么。
+    // 「每台机器带了谁」是宿主这边唯一的反馈回路 —— 少了它，用户只能看到 agent 没进来。
+    if (wants(shot, 'old-peer')) {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          return {
+            peers: [...document.querySelectorAll('.cr-peer')].map((row) => ({
+              machine: text(row.querySelector('.cr-peer-machine')),
+              state: text(row.querySelector('.cr-peer-state, .cr-warn')),
+              old: Boolean(row.querySelector('.cr-warn')),
+            })),
+            members: [...document.querySelectorAll('.cr-member-name')].map(text),
+          }
+        })()`,
+      )
+      const peer = state.peers.find((row) => row.machine === '阿青的 Surface')
+      if (!peer) throw new Error(`没有列出那台机器：${JSON.stringify(state.peers)}`)
+      if (!peer.old) throw new Error('旧版本那台没被标出来：界面会让人以为「它只是还没建 agent」')
+      if (!/旧版本/.test(peer.state)) throw new Error(`提示没说清是版本问题：${JSON.stringify(peer.state)}`)
+      if (!/重启/.test(peer.state)) throw new Error(`提示没给出该做的事：${JSON.stringify(peer.state)}`)
+      if (!state.members.includes('阿青')) throw new Error(`屋里应该有这个人：${JSON.stringify(state.members)}`)
+      if (state.members.some((name) => /agent/.test(name) && !/账期|退货/.test(name))) {
+        throw new Error(`旧版本那台不可能带着 agent 成员：${JSON.stringify(state.members)}`)
+      }
+      await fetch(`http://127.0.0.1:${port}/preview/tidy`)
+      console.log('verified — 版本不一致：列出「阿青的 Surface · 旧版本，报不了 agent 名单 —— 重启那台的桌面端」')
     }
     // 浮窗既然能拖到任何地方，就得证明它拖不丢：记住的坐标要真的用上、越界的坐标要夹回、
     // 拖到屏幕外要夹住、窗口变窄以后还得在视口里。四条都跑在真实渲染的页面里。

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import { baseUrl, fail, getJson, parseTarget, postJson } from './lan.js'
+import { BUILD, baseUrl, fail, getJson, parseTarget, postJson } from './lan.js'
 import { project } from './project.js'
 
 /**
@@ -131,6 +131,22 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     })
   }
 
+  /**
+   * 记下「对面那台插件的版本够不够」。
+   *
+   * 只有真的打到 404 才置位：说明对方没有 /lan/agents 这条路，也就是旧版本。
+   * 这条信息必须能出现在界面上 —— 否则用户只会看到「agent 进不来」，
+   * 而真正要做的事是重启对面的桌面端。
+   */
+  function markHostOld(linkId, hostOld) {
+    const link = linkById(linkId)
+    if (!link || Boolean(link.hostOld) === hostOld) return
+    store.commit((draft) => {
+      const row = (draft.links ?? []).find((item) => item.id === linkId)
+      if (row) row.hostOld = hostOld
+    })
+  }
+
   /** 停掉一条链接的两个长轮询（离开、或屋子已经没了）。 */
   function stopRuntime(linkId) {
     const runtime = runtimes.get(linkId)
@@ -203,6 +219,7 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
         machine,
         self: { id: store.state.self.id, name: store.state.self.name },
         agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+        build: BUILD,
       },
       { timeoutMs: 15_000 },
     )
@@ -219,6 +236,8 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
       selfMemberId: value.selfMemberId,
       status: 'online',
       error: null,
+      // 重新握手就是重新确认对方版本：上一次的 404 不能留在这条链路上。
+      hostOld: false,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     }
     store.commit((draft) => upsertMirror(draft, record, value.snapshot))
@@ -248,12 +267,20 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
             machine: record.machine,
             self: { id: store.state.self.id, name: store.state.self.name },
             agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+            build: BUILD,
           },
           { timeoutMs: 15_000 },
         )
         runtime.failedAt = 0
         store.commit((draft) => {
-          const next = { ...record, peerId: value.peerId, selfMemberId: value.selfMemberId, status: 'online', error: null }
+          const next = {
+            ...record,
+            peerId: value.peerId,
+            selfMemberId: value.selfMemberId,
+            status: 'online',
+            error: null,
+            hostOld: false,
+          }
           upsertMirror(draft, next, value.snapshot)
         })
         return value
@@ -427,8 +454,13 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
           { timeoutMs: 8000 },
         )
         if (value?.snapshot) applyRemote(peer.id, value.snapshot)
+        // 这一次报成功了：对面不是旧版本（或已经重启换成新版），提示可以撤掉。
+        markHostOld(peer.id, false)
         return value
       }).catch((error) => {
+        // 404 = 对面根本没有这个端点。这是版本不一致，不是网络故障：
+        // 记下来让界面直说「宿主的插件是旧版本」，别让人反复重试。
+        if (error?.code === 'not_found') markHostOld(record.id, true)
         log('lan_announce_failed', { link: record.id, error })
         return null
       })
