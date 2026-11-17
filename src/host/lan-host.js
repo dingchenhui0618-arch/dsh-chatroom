@@ -790,7 +790,10 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         next.listen(wantPort, '0.0.0.0')
       })
     } catch (error) {
-      lastError = error?.code === 'EADDRINUSE' ? `端口 ${wantPort} 被占用了。` : String(error?.message ?? error)
+      lastError =
+        error?.code === 'EADDRINUSE'
+          ? `端口 ${wantPort} 被占用了。关掉占着它的程序，或用 DSH_CHATROOM_PORT 换一个端口。`
+          : String(error?.message ?? error)
       log('lan_listen_failed', lastError)
       await new Promise((resolve) => next.close(() => resolve()))
       return status()

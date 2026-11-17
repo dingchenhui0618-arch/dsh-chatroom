@@ -56,6 +56,9 @@ test('端口被别的程序占了：插件照样起来，本机房间能聊，�
     assert.equal(view.lan.serving, false, '端口被占时不能说自己已经在服务')
     assert.equal(view.lan.port, null)
     assert.match(String(view.lan.error ?? ''), new RegExp(`端口 ${port} 被占用了。`))
+    // 光说「被占用了」是死路：界面那行要顺手给出能做的事。
+    assert.match(String(view.lan.error ?? ''), /关掉占着它的程序/)
+    assert.match(String(view.lan.error ?? ''), /DSH_CHATROOM_PORT/)
 
     // 本机这条路必须完全不受影响：建房、建 agent、@ 它、它回话。
     const created = await command(fake, 'room.create', { name: '本机对账' })
