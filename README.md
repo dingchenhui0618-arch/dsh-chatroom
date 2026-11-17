@@ -173,6 +173,9 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | LAN 清扫（关掉的机器被撤掉；长轮询中 / 正在跑模型的机器不被误清） | ✅ 已验证 | 同上：把 idle 压到 400ms 跑真清扫，1.2s 后仍在屋里，关掉后整组消失 |
 | LAN 解散（宿主解散 → 加入方留墓碑、只能移除，不是死胡同） | ✅ 已验证 | 同上：`remote_room_gone` + 移除后 `links` 清空 |
 | LAN 请求面**不会被坏包打死**（畸形 `Host` / 非法请求行 / 超大 body / 非 JSON / 未知路径） | ✅ 已验证 | `test/lan-hardening.test.mjs` 3 用例：直接往 socket 灌字节，断言每条都有状态码、之后宿主仍能服务、全程零未处理拒绝。拿修复前的代码跑同一组测试，3 条全红 |
+| **三台机器同屋**（宿主 + 两台加入方）：6 个成员的归属不串台，A 的镜像把 B 的人标成 `LAN · GUEST-B`，B 说一句在 A 那边不能变成本机 | ✅ 已验证（真 HTTP） | `test/lan-multi.test.mjs` 3 用例：`@阿乙` 只派给 B（A 与宿主的模型调用次数都是 0），B 的回复落库 `origin.machine = GUEST-B` |
+| **全员轮次跨两台机器**：三台机器各一个 agent、预算正好 3，一轮里恰好各说一次，没有重复派发 | ✅ 已验证 | 同上：断言 Claude / 阿甲 / 阿乙 各一条、`prompts` 各 1；等 600ms 后仍只有 3 条 |
+| 第三方离开：只撤它的人和 agent，另外两台照旧（包括 A 的镜像里 B 消失而自己不丢） | ✅ 已验证 | 同上 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
@@ -202,7 +205,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + LAN 抗坏包 + 客户端装载 + 包清单（37 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 客户端装载 + 包清单（40 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
