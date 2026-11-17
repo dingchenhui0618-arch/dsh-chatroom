@@ -92,6 +92,18 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 截图用：让宿主真的把那间屋子解散，好去截加入方那边的「墓碑」状态。
+      // 走的是插件自己的 command，不是给页面塞假数据。
+      if (nudge && url.pathname === '/preview/dissolve') {
+        const view = host.snapshot()
+        const room = view.rooms.find((row) => !row.remote) ?? view.rooms[0]
+        if (room) await host.command({ action: 'room.dissolve', input: { roomId: room.id } })
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: Boolean(room), roomId: room?.id ?? null }))
+        return
+      }
+
       const map = {
         '/': join(here, 'index.html'),
         '/client.js': join(root, 'lib', 'client.js'),

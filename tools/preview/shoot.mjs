@@ -70,6 +70,14 @@ const shots = [
     waitForAfter: '.cr-toast',
     caption: '新消息提醒：折叠胶囊上的未读数 + 右上角 toast，标题栏前缀同步',
   },
+  {
+    name: 'gone',
+    port: guestPort,
+    view: 'panel',
+    setup: '/preview/dissolve',
+    waitFor: 'textarea[disabled]',
+    caption: '宿主解散后加入方看到的样子：历史还在、输入锁住、右栏写下原因并只留「从列表移除」',
+  },
 ]
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -169,6 +177,9 @@ try {
   await mkdir(outDir, { recursive: true })
 
   for (const shot of shots) {
+    // 有的状态得先把屋子演进到那一步（例如宿主解散）再截，不能靠假数据摆拍。
+    // 这类准备动作作用在宿主那份状态机上，所以固定走宿主端口。
+    if (shot.setup) await fetch(`http://127.0.0.1:${port}${shot.setup}`)
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
     await cdp.send('Emulation.setDeviceMetricsOverride', {
