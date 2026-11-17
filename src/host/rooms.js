@@ -68,6 +68,7 @@ export function createRoom(state, { name, topic, selfName } = {}) {
     role: '',
     botId: null,
     sessionId: null,
+    owner: 'local',
     origin: { kind: 'local', peer: null, machine: null },
     joinedAt: new Date().toISOString(),
     reach: 'here',
@@ -128,6 +129,9 @@ export function addMember(state, { roomId, member } = {}) {
     role: clean(member.role, LIMITS.role),
     botId: member.botId ?? null,
     sessionId: member.sessionId ?? null,
+    // owner 是「这个成员由哪台机器负责」：'local' 由本机驱动，peerId 表示
+    // 它的人和 agent 都在那台机器上 —— 本机不能替它说话，只能把这一轮派发过去。
+    owner: typeof member.owner === 'string' && member.owner ? member.owner : 'local',
     origin,
     joinedAt: new Date().toISOString(),
     // 来源决定初始在线态：LAN 进来的人在「别的机器上」，不能标成本机在线。
@@ -147,6 +151,25 @@ export function normalizeOrigin(origin) {
     }
   }
   return { kind: 'local', peer: null, machine: null }
+}
+
+/** 这台机器之外的人和他带的 agent：他们的回合必须派发出去，不能本地跑。 */
+export const isRemoteMember = (member) => Boolean(member && member.owner && member.owner !== 'local')
+
+/** 某个 peer 在这间屋子里占的所有成员。断线/离开时整组撤掉。 */
+export function membersOfPeer(room, peerId) {
+  return room.members.filter((member) => member.owner === peerId)
+}
+
+export function removePeer(state, { roomId, peerId } = {}) {
+  const room = requireRoom(state, roomId)
+  const removed = membersOfPeer(room, peerId)
+  for (const member of removed) {
+    room.members = room.members.filter((row) => row.id !== member.id)
+    if (room.rules.chairId === member.id) room.rules.chairId = null
+    delete room.reads[member.id]
+  }
+  return removed
 }
 
 export function removeMember(state, { roomId, memberId } = {}) {

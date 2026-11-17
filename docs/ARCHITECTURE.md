@@ -37,13 +37,18 @@ ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-client-connection'
 状态是一份整体快照，落在 `<profile>/dsh-chatroom/state.json`（写 tmp 再 rename）。
 
 ```js
-state = { schema: 1, revision, self: {id:'me', name}, rooms: [Room], bots: [Bot], activeRoomId }
+state = { schema: 1, revision, self: {id:'me', name}, rooms: [Room], bots: [Bot],
+          links: [Link], activeRoomId }
 
-Room    = { id, code, name, topic, ownerId, createdAt, rules, members[], messages[], nextSeq, reads{}, activity }
+Room    = { id, code, name, topic, ownerId, createdAt, rules, members[], messages[],
+            nextSeq, reads{}, activity, remote? }
 Member  = { id, kind:'human'|'bot', name, role, botId, sessionId,
-            origin:{kind:'local'|'lan', peer, machine}, joinedAt, reach }
+            owner:'local'|peerId, origin:{kind:'local'|'lan', peer, machine},
+            joinedAt, reach }
 Message = { seq, id, at, authorId, authorName, authorKind, text,
             mentions[], replyTo, origin, status:'sent'|'error', opKey }
+Link    = { id, host, port, code, peerId, hostMachine, roomId, localRoomId,
+            selfMemberId, machine, status, error }   // 加入别人屋子时的那条连接
 Rules   = { mention, roundRobin, chairId, maxSpeakers, maxDepth, maxChars }
 ```
 
@@ -52,6 +57,9 @@ Rules   = { mention, roundRobin, chairId, maxSpeakers, maxDepth, maxChars }
 - `opKey` 做幂等：同一个 key 重发不会进两遍（网络抖动时的重试安全）。
 - `status:'error'` 的占位消息**不进**喂给模型的对话记录，否则模型会看到一堆「某某没回上来」。
 - `activity` 是「正在发言」的瞬时状态，也放在状态里，这样一轮结束/失败都能被界面看到。
+- `owner` 是「这个成员由哪台机器负责」。`'local'` = 本机驱动；`peerId` = 它的人和 agent
+  都在那台机器上，本机不能替它说话。
+- `remote` 非空的房间是**镜像**：状态由宿主同步过来，本地只读，写操作转发出去。
 
 ### @ 由 Host 认，不由客户端认
 
@@ -93,57 +101,76 @@ handle。resume 失败（会话没落盘）时回落 create，是预期路径而
 `speak.js` 里是「预算桶」：每驱动一个 agent 扣一格，扣完就停。这是一屋子 agent 不烧钱
 的唯一保障；界面上「正在发言 A、B」来自 `activity.speaking`，「停下这一轮」就是 abort。
 
-## 6. LAN（未实现，设计已定）
+## 6. LAN：两台机器进同一间屋子
 
 **角色**：一台当宿主（Host），其余当加入者（Guest）。两边跑同一个插件。
 
-**监听**：`node:http` 起一个 `0.0.0.0:<port>` 的独立服务器（DSH 自己的端口是 loopback + cookie，
-不能拿来给局域网）。房间码 `ABC123` 就是凭据，端口 + 码写在面板上，对方输入这两样加入。
+**监听**：`node:http` 起一个 `0.0.0.0:<port>`（默认 4399，`DSH_CHATROOM_PORT` 可改）的独立服务器。
+DSH 自己的端口是 loopback + cookie + 每进程随机 token，**不能**拿来给局域网用。房间码就是凭据。
 
-**成员归属**：`Member.origin = {kind:'lan', peer: <peerId>}`，并新增 `Member.owner = 'local' | peerId`。
-
-**关键难点：agent 不可能跨机器执行。** 宿主不能替对方的 agent 说话，所以：
+**为什么宿主不能直接跑对方的 agent**：agent 的 session、模型选择、记忆都在它自己那台机器上。
+所以「轮到谁 → 在哪跑」必须分开：
 
 ```
 宿主决定轮到 member M（M.owner = peer P）
-  → 不本地跑，改为入队 assignment {id, roomId, memberId, prompt}
-  → P 长轮询 /lan/assignments 领到它
-  → P 用自己机器上的 session 跑这个 agent（复用 turn.js）
+  → 不本地跑，改为入队 assignment {id, roomId, memberId, agentId, prompt}
+  → P 长轮询 /lan/assignments 领走它（一次性领取，不重复派发）
+  → P 用自己机器上的原生 session 跑这个 agent（复用 turn.js）
   → P 回传 {assignmentId, text}
-  → 宿主校验 assignment 一次性未过期 → 以 M 的身份落库
+  → 宿主校验「是我的、还没被用掉」→ 以 M 的身份落库（origin 仍是 lan）
 ```
 
-**失败与断线**：assignment 超时（45s）落一条 `status:'error'` 占位；peer 重连用 `since=seq` 补齐；
-宿主重启后 assignment 直接作废（宁可丢一轮，不要错乱）。
+`speak.js` 里就一处分支：`isRemoteMember(bot)` 走 `dispatchRemote`，否则走 `runner.say`。
+三条规则的排队、预算闸门、失败占位**两边共用同一套**，不因为远程多一条路径。
+
+**加入方的镜像**：加入方把宿主的房间投影**映**到自己 state 里（`room.remote` 非空），
+写操作全部转发（`msg.send` / `read.mark` / `self.rename`），规则与成员类操作直接拒绝（`remote_room`）。
+镜像要处理三件容易错的事：
+
+1. **视角翻转**：宿主眼里的「本机」在加入方是「远程」，反之亦然。否则两边都以为自己是本地。
+2. **self 撞名**：两边自己的人 id 都是 `'me'`。镜像里只留一个 `'me'`（我的），
+   宿主的 `'me'` 换成 `host_xxxxxx`，否则消息会被认成「我发的」。
+3. **未读归属**：宿主的投影按 `viewerId`（这个 peer 的人）算未读，随投影一起带过来；
+   加入方不本地重算 —— 它没有宿主的 reads 表，重算只会得到「全都没读」。
+
+**失败与断线**：assignment 超时（45s，测试可用 `DSH_CHATROOM_ASSIGN_TIMEOUT` 压短）落一条
+`status:'error'` 占位；peer 掉线由 `lastSeen`（45s 内无请求）判定，派发直接失败。
+长轮询断开自动重连；宿主重启后 peerId 失效，加入方重新握手（宁可重连，不认旧身份）。
+进程重启时 `state.links` 会被 `resume()` 拿去重新加入。
 
 **安全取舍**：局域网内明文 HTTP + 房间码，不做 TLS、不做账号。这是**设计取舍不是遗漏**：
-它的威胁模型是「同一 WiFi 下可信的人」，不是公网。要跨公网得走隧道（参考 dsh-in-hand-relay 的
-白名单中继思路），那是另一个决定。
+威胁模型是「同一 WiFi 下可信的人」，不是公网。peerId 是一次握手的随机凭据，
+除 `/lan/join`（需要房间码）与 `/lan/ping` 外，所有端点都要求它。
 
 ### 接口（宿主侧，房间码鉴权）
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| POST | `/lan/join` | `{code, machine, agents:[{name,role}]}` → `{peerId, snapshot}` |
-| GET | `/lan/state?peerId=&since=` | 长轮询，房间投影 |
-| POST | `/lan/message` | `{peerId, text, opKey}` → 以该 peer 的人身份发言 |
-| GET | `/lan/assignments?peerId=` | 长轮询，领取待执行的 agent 回合 |
-| POST | `/lan/reply` | `{peerId, assignmentId, text}` |
+| POST | `/lan/join` | `{code, machine, self, agents}` → `{peerId, selfMemberId, snapshot}` |
+| GET | `/lan/state?peerId=&since=` | 长轮询（25s），房间投影 + revision |
+| POST | `/lan/message` | `{peerId, text, opKey}` → 以该 peer 的人身份发言，回投影 |
+| GET | `/lan/assignments?peerId=` | 长轮询（25s），领取一条待执行的 agent 回合 |
+| POST | `/lan/reply` | `{peerId, assignmentId, text\|error}` |
+| POST | `/lan/read` | `{peerId, seq}` → 标记已读，回投影（避免旧快照把未读闪回来） |
+| POST | `/lan/self` | `{peerId, name}` → 改这个 peer 的人名 |
+| POST | `/lan/leave` | `{peerId}` → 撤掉它的人和 agent |
+| GET | `/lan/ping` | 无鉴权，只回答「这台机器在不在监听」 |
 
 ## 7. 明确不做的事
 
 - **不复用 dsh-bot**：它的 `peerDependencies` 钉在 `0.2.0-rc.2`，本机是 `0.2.2-rc.1`，
   硬依赖会把插件绑死在一个版本上。自带轻量 Bot 模型（具名/职责/独立 session），语义相同，
   等它进入正式版本再谈适配层。
-- **不做账号 / 公网多租户**：这是插件，不是服务。
+- **不做账号 / 公网多租户**：这是插件，不是服务。跨公网要走隧道（白名单中继），另做决定。
 - **不做附件、撤回、推送、手机端**：先把「一间屋子里把话说完」做扎实。
 
 ## 8. 测试策略
 
 | 层 | 怎么测 | 为什么 |
 | --- | --- | --- |
-| `rooms.js` | 纯函数单元测试（12 用例） | 状态机是唯一会产生「数据错乱」的地方 |
+| `rooms.js` | 纯函数单元测试（13 用例） | 状态机是唯一会产生「数据错乱」的地方 |
 | `plugin.js` + `turn.js` + `speak.js` | 假 ctx 跑真实 `apply()`，假模型（7 用例） | 验证接线：路由、信封、命令、@ 识别、预算、落库顺序 |
+| LAN（宿主 + 加入者） | 两个独立实例各起 `node:http`，互相走真实 `/lan/*`（4 用例） | 跨机器这条路没法用单测假装：真 HTTP、真鉴权、真派发、真超时 |
 | `lib/client.js` | 在 Node 里按真实加载协议装载 + 假 React 桩 | 客户端装错的后果是整页白屏，必须能离线拦住 |
-| 真实模型 | 装进 profile 后手动跑一轮 | 只能真跑，没有替代品 |
-| 视觉效果 | 真实渲染截图 | 见 README 的验证状态表 |
+| 真实模型 | 装进 profile 后从局域网 peer 身份发一句 @，读回真回复 | 只能真跑，没有替代品 |
+| 视觉效果 | 真实渲染截图（两个进程的 LAN 也在里面） | 见 README 的验证状态表 |

@@ -15,6 +15,9 @@ import { apply } from '../src/host/plugin.js'
 
 const encoder = new TextEncoder()
 
+// LAN 监听在 apply() 里就会起来；测试用系统挑的空闲端口，不去抢本机宿主的 4399。
+process.env.DSH_CHATROOM_PORT = '0'
+
 function fakeCtx(dir) {
   const routes = new Map()
   const agents = new Map()

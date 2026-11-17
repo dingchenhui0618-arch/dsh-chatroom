@@ -25,6 +25,9 @@ export function emptyState() {
     self: { id: 'me', name: '我' },
     rooms: [],
     bots: [],
+    // 加入过的局域网房间。宿主那边的 peerId 每次握手都换，所以这里只留
+    // 「连哪里、用哪个房间码」——重启后拿它重新握手，而不是沿用旧身份。
+    links: [],
     activeRoomId: null,
   }
 }
@@ -39,6 +42,9 @@ export function validateState(value) {
   if (!Number.isSafeInteger(value.revision) || value.revision < 0) fail('malformed_state')
   if (!value.self || typeof value.self.name !== 'string') fail('malformed_state')
   if (!Array.isArray(value.rooms) || !Array.isArray(value.bots)) fail('malformed_state')
+  // links 是后加的字段：旧 state.json 没有它，读成空数组即可，不必升 schema。
+  if (value.links === undefined) value.links = []
+  if (!Array.isArray(value.links)) fail('malformed_state')
   return value
 }
 

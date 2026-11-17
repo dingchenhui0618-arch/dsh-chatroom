@@ -10,12 +10,15 @@ import {
   markRead,
   postMessage,
   removeMember,
-  unreadOf,
   updateMember,
   updateRoom,
 } from './rooms.js'
 import { createBotRunner } from './turn.js'
 import { createSpeaker } from './speak.js'
+import { createLanBridge } from './lan-bridge.js'
+import { project } from './project.js'
+
+export { project } from './project.js'
 
 export const name = 'dsh-chatroom'
 
@@ -42,47 +45,19 @@ function publicError(error, signal) {
   return { code, message: error?.message ? String(error.message).slice(0, 400) : '操作未完成。' }
 }
 
-const PROJECTION_MESSAGES = 200
-
-/**
- * 给客户端的投影：只给面板需要的字段，消息截到最近 200 条。
- * 导出是给 QA 渲染工具用的：它要在没有 DSH 外壳的情况下复用同一份投影与分发。
- */
-export function project(state) {
-  return {
-    revision: state.revision,
-    self: { id: state.self.id, name: state.self.name },
-    activeRoomId: state.activeRoomId,
-    bots: state.bots.map((bot) => ({
-      id: bot.id,
-      name: bot.name,
-      role: bot.role,
-      sessionId: bot.sessionId,
-      lastError: bot.lastError ?? null,
-      lastSpokeAt: bot.lastSpokeAt ?? null,
-    })),
-    rooms: state.rooms.map((room) => ({
-      id: room.id,
-      code: room.code,
-      name: room.name,
-      topic: room.topic,
-      createdAt: room.createdAt,
-      ownerId: room.ownerId,
-      rules: { ...room.rules },
-      activity: room.activity ?? null,
-      nextSeq: room.nextSeq,
-      unread: unreadOf(room, state.self.id),
-      members: room.members,
-      messages: room.messages.slice(-PROJECTION_MESSAGES),
-      truncated: room.messages.length > PROJECTION_MESSAGES,
-    })),
-  }
+/** 从别的机器同步过来的房间：规则、成员、解散都得在那台机器上改。 */
+function assertLocal(room, action) {
+  if (!room?.remote) return room
+  throw Object.assign(new Error(`这间屋子在 ${room.remote.machine || room.remote.host} 上，${action}要在那台机器上做。`), {
+    code: 'remote_room',
+  })
 }
 
-export function dispatch({ store, speaker, command }) {
+export async function dispatch({ store, speaker, lan = null, command }) {
   const action = String(command?.action ?? '')
   const input = command?.input && typeof command.input === 'object' ? command.input : {}
   const state = store.state
+  const roomOf = (roomId) => getRoom(state, roomId)
 
   switch (action) {
     case 'room.create': {
@@ -90,12 +65,14 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'room.update': {
+      assertLocal(roomOf(input.roomId), '改规则')
       store.commit((draft) =>
         updateRoom(draft, { roomId: input.roomId, name: input.name, topic: input.topic, rules: input.rules }),
       )
       break
     }
     case 'room.dissolve': {
+      assertLocal(roomOf(input.roomId), '解散')
       store.commit((draft) => dissolveRoom(draft, { roomId: input.roomId }))
       break
     }
@@ -108,6 +85,7 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'member.createBot': {
+      assertLocal(roomOf(input.roomId), '加 agent')
       store.commit((draft) => {
         const bot = {
           id: `bot_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
@@ -128,6 +106,7 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'member.addBot': {
+      assertLocal(roomOf(input.roomId), '加 agent')
       store.commit((draft) => {
         const bot = draft.bots.find((row) => row.id === input.botId)
         if (!bot) throw Object.assign(new Error('bot_not_found'), { code: 'bot_not_found' })
@@ -139,6 +118,7 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'member.addHuman': {
+      assertLocal(roomOf(input.roomId), '加人')
       store.commit((draft) => {
         addMember(draft, {
           roomId: input.roomId,
@@ -155,16 +135,31 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'member.update': {
+      assertLocal(roomOf(input.roomId), '改成员')
       store.commit((draft) =>
         updateMember(draft, { roomId: input.roomId, memberId: input.memberId, patch: input.patch }),
       )
       break
     }
     case 'member.remove': {
+      assertLocal(roomOf(input.roomId), '移出成员')
       store.commit((draft) => removeMember(draft, { roomId: input.roomId, memberId: input.memberId }))
       break
     }
     case 'msg.send': {
+      const target = roomOf(input.roomId)
+      if (target?.remote) {
+        // 镜像房间的消息必须落回宿主，否则两台机器各有一份「我说过的话」。
+        if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+        await lan.send({
+          roomId: target.id,
+          text: input.text,
+          mentions: input.mentions,
+          replyTo: input.replyTo,
+          opKey: input.opKey,
+        })
+        break
+      }
       let posted = null
       store.commit((draft) => {
         posted = postMessage(draft, {
@@ -181,14 +176,15 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'msg.retry': {
-      const room = getRoom(state, input.roomId)
-      const message = room?.messages.find((row) => row.seq === input.seq)
-      if (!room || !message) throw Object.assign(new Error('message_not_found'), { code: 'message_not_found' })
+      const retryRoom = assertLocal(roomOf(input.roomId), '重试')
+      const message = retryRoom.messages.find((row) => row.seq === input.seq)
+      if (!message) throw Object.assign(new Error('message_not_found'), { code: 'message_not_found' })
       if (message.authorKind !== 'bot') throw Object.assign(new Error('只能让 agent 重说'), { code: 'not_agent_message' })
       speaker.retryBot({ roomId: input.roomId, memberId: message.authorId })
       break
     }
     case 'round.run': {
+      assertLocal(roomOf(input.roomId), '发起全员发言')
       speaker.runRound({ roomId: input.roomId })
       break
     }
@@ -197,7 +193,23 @@ export function dispatch({ store, speaker, command }) {
       break
     }
     case 'read.mark': {
+      const target = roomOf(input.roomId)
+      if (target?.remote) {
+        if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+        await lan.read({ roomId: target.id, seq: Number(input.seq) })
+        break
+      }
       store.commit((draft) => markRead(draft, { roomId: input.roomId, memberId: draft.self.id, seq: input.seq }))
+      break
+    }
+    case 'lan.join': {
+      if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+      await lan.join({ host: input.host, port: input.port, code: input.code, machine: input.machine })
+      break
+    }
+    case 'lan.leave': {
+      if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+      await lan.leave(input.linkId)
       break
     }
     case 'self.rename': {
@@ -206,10 +218,13 @@ export function dispatch({ store, speaker, command }) {
         if (!label) throw Object.assign(new Error('名字不能为空'), { code: 'name_required' })
         draft.self.name = label
         for (const room of draft.rooms) {
+          if (room.remote) continue
           const member = getMember(room, draft.self.id)
           if (member) member.name = label
         }
       })
+      // 镜像房间里「我」这个名字在宿主那边：改完得告诉它，否则对面看到的还是旧名字。
+      if (lan && (state.links ?? []).length) await lan.rename(state.self.name)
       break
     }
     case 'bot.update': {
@@ -219,6 +234,7 @@ export function dispatch({ store, speaker, command }) {
         if (input.name !== undefined) bot.name = String(input.name).trim().slice(0, 60) || bot.name
         if (input.role !== undefined) bot.role = String(input.role).trim().slice(0, 200)
         for (const room of draft.rooms) {
+          if (room.remote) continue
           const member = room.members.find((row) => row.botId === bot.id)
           if (member) {
             member.name = bot.name
@@ -232,7 +248,7 @@ export function dispatch({ store, speaker, command }) {
       throw Object.assign(new Error(`未知操作：${action}`), { code: 'unknown_action' })
   }
 
-  return project(store.state)
+  return lan ? lan.view() : project(store.state)
 }
 
 function waitForChange(store, since, signal, timeoutMs = 25_000) {
@@ -303,7 +319,11 @@ export function apply(ctx) {
     const dir = join(profile.dir, 'dsh-chatroom')
     const store = await Store.open(dir)
     const runner = createBotRunner(ctx, { log })
-    const speaker = createSpeaker({ store, runner, log })
+    // 先有 bridge 才有「远程成员的回合该怎么派出去」；speaker 反过来要交给 bridge，
+    // 这样宿主收到局域网消息时走的还是同一个调度器（三条规则的预算只有一份）。
+    const lan = createLanBridge({ store, runner, log })
+    const speaker = createSpeaker({ store, runner, dispatchRemote: lan.enqueue, log })
+    lan.setSpeaker(speaker)
     const disposers = []
     let closed = false
 
@@ -329,12 +349,12 @@ export function apply(ctx) {
         request.signal?.throwIfAborted?.()
         const payload = message.payload ?? {}
         if (endpoint === 'snapshot') {
-          result = { ok: true, value: project(store.state) }
+          result = { ok: true, value: lan.view() }
         } else if (endpoint === 'command') {
-          result = { ok: true, value: dispatch({ store, speaker, command: payload }) }
+          result = { ok: true, value: await dispatch({ store, speaker, lan, command: payload }) }
         } else if (endpoint === 'watch') {
           await waitForChange(store, Number(payload.since ?? -1), request.signal)
-          result = { ok: true, value: project(store.state) }
+          result = { ok: true, value: lan.view() }
         } else {
           throw Object.assign(new Error('invalid_endpoint'), { code: 'invalid_endpoint' })
         }
@@ -358,8 +378,12 @@ export function apply(ctx) {
         )
       }
       await store.flush()
+      // LAN 监听起不来（端口被占）不该让整个插件失败：本机房间照常能用，
+      // 只是「加入 / 邀请」栏会显示具体原因。
+      await lan.start()
       return async () => {
         closed = true
+        await lan.dispose()
         for (const dispose of disposers.splice(0).reverse()) {
           try {
             await dispose()
@@ -370,6 +394,7 @@ export function apply(ctx) {
         await store.close()
       }
     } catch (error) {
+      await lan.dispose()
       for (const dispose of disposers.splice(0).reverse()) {
         try {
           await dispose()

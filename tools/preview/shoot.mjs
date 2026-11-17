@@ -16,6 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
 const outDir = join(root, 'docs')
 const port = Number(process.env.PREVIEW_PORT ?? 3491)
+const guestPort = Number(process.env.PREVIEW_GUEST_PORT ?? port + 1)
 const cdpPort = Number(process.env.PREVIEW_CDP_PORT ?? 9333)
 
 const CHROME = [
@@ -31,7 +32,14 @@ const shots = [
     name: 'panel',
     view: 'panel',
     waitFor: '.cr-msg',
-    caption: '房间面板：左侧房间列表、中间群聊、右侧成员与规则入口；LAN 成员带远程 chip',
+    caption: '房间面板：房间列表 / 群聊 / 成员与规则入口；从 LAN 加入的人和他的 agent 带远程 chip',
+  },
+  {
+    name: 'invite',
+    view: 'panel',
+    waitFor: '.cr-msg',
+    open: '邀请',
+    caption: '邀请另一台机器：局域网地址 + 房间码就是全部凭据，另一台机器填这两样就能进来',
   },
   {
     name: 'rules',
@@ -39,6 +47,13 @@ const shots = [
     waitFor: '.cr-msg',
     open: '规则',
     caption: '三条发言规则并行开关：被 @ 必回、全员轮次、主持人指派，共用发言预算',
+  },
+  {
+    name: 'guest',
+    port: guestPort,
+    view: 'panel',
+    waitFor: '.cr-msg',
+    caption: '同一间屋子，加入那台机器看到的视角：自己的人是本机，宿主的成员标 LAN · 由 <机器名> 主持',
   },
   {
     name: 'float',
@@ -164,10 +179,10 @@ try {
     }, sessionId)
     await cdp.send('Page.enable', {}, sessionId)
     await cdp.send('Runtime.enable', {}, sessionId)
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?view=${shot.view}` }, sessionId)
+    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${shot.port ?? port}/?view=${shot.view}` }, sessionId)
     await waitForSelector(cdp, sessionId, shot.waitFor)
     if (shot.nudge) {
-      await fetch(`http://127.0.0.1:${port}/preview/nudge`)
+      await fetch(`http://127.0.0.1:${shot.port ?? port}/preview/nudge`)
       await waitForSelector(cdp, sessionId, shot.waitForAfter)
     }
     if (shot.open) {

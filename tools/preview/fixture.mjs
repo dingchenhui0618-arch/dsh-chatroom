@@ -2,29 +2,38 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '../../src/host/state.js'
-import { dispatch, project } from '../../src/host/plugin.js'
+import { dispatch } from '../../src/host/plugin.js'
+import { createLanBridge } from '../../src/host/lan-bridge.js'
 import { createSpeaker } from '../../src/host/speak.js'
 import { createBotRunner } from '../../src/host/turn.js'
-import { addMember, createRoom, markRead, postMessage, updateMember } from '../../src/host/rooms.js'
+import { addMember, createRoom, markRead, postMessage } from '../../src/host/rooms.js'
 
 /**
  * 截图用的 Host 替身。
  *
- * 它不重写业务逻辑：状态机（rooms.js）、投影与命令分发（plugin.js）、发言规则
- * （speak.js）都是线上那一份，只有三样是替身 ——
+ * 它不重写业务逻辑：状态机（rooms.js）、投影与命令分发（project.js / plugin.js）、
+ * 发言规则（speak.js）、LAN 宿主与加入者（lan-host.js / lan-guest.js）都是线上那一份，
+ * 只有三样是替身 ——
  *   1. profile 目录换成临时目录，不碰用户真实房间；
  *   2. agents / sessions 换成假模型，截图不必真调 LLM（真模型验收在真宿主里另做）；
  *   3. 路由层用 node:http 而不是 DSH 的 connection.fetch。
  *
- * 目的只有一个：在没有 DSH 外壳的浏览器里，让真实的 lib/client.js 拿到真实形状的
- * snapshot，从而截到「真渲染」，而不是手画 mockup。
+ * 两台机器就在同一个进程里各起一个 Store，互相走真实的局域网 HTTP 协议 ——
+ * 所以截图里的「LAN 进来的成员」不是画上去的，是真加入进来的。
  */
 
 const log = (...args) => console.warn('[chatroom-preview]', ...args)
 
-function fakeCtx(dir) {
+// 端口交给系统挑：截图不该跟本机正在跑的宿主抢 4399。
+process.env.DSH_CHATROOM_PORT = '0'
+
+function fakeCtx(dir, { reply } = {}) {
   const agents = new Map()
   const events = new Map()
+  const replyFor =
+    typeof reply === 'function'
+      ? reply
+      : () => (typeof reply === 'string' ? reply : '我看了现金流，数字对得上。')
 
   function agentFor(sessionId) {
     const session = { id: sessionId, seq: 0, header: {} }
@@ -36,16 +45,17 @@ function fakeCtx(dir) {
           .filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('\n')
-        const text = /退货/.test(prompt)
-          ? '7.1% 里 62% 是三款夏装尾货，按现价清仓能把 Q4 退货成本压回 15 万以内。'
-          : '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。'
         const list = events.get(sessionId) ?? []
         list.push({
           seq: list.length + 1,
           type: 'assistant/message',
           data: {
             interrupted: false,
-            message: { id: `a${list.length + 1}`, role: 'assistant', content: [{ type: 'text', text }] },
+            message: {
+              id: `a${list.length + 1}`,
+              role: 'assistant',
+              content: [{ type: 'text', text: String(replyFor(prompt)) }],
+            },
           },
         })
         events.set(sessionId, list)
@@ -82,11 +92,10 @@ function fakeCtx(dir) {
   return { profileContext: { name: 'preview', dir }, get: (key) => services[key], effect: (fn) => fn() }
 }
 
-const LAN = { kind: 'lan', peer: '192.168.1.42', machine: 'MacBook-Air' }
 const now = () => new Date().toISOString()
 
-function seed(store) {
-  store.commit((draft) => {
+function seedHost(store) {
+  return store.commit((draft) => {
     draft.self.name = '林岸'
     const room = createRoom(draft, {
       name: 'Q4 复盘 · 现金流',
@@ -125,50 +134,107 @@ function seed(store) {
       roomId: room.id,
       member: { id: 'm_bot_returns', kind: 'bot', name: returns.name, role: returns.role, botId: returns.id, sessionId: returns.sessionId },
     })
-    // 远程那台机器上的人，以及它带过来的 agent：origin 决定界面上的「本机 / LAN」。
-    addMember(draft, {
-      roomId: room.id,
-      member: { id: 'h_zhou', kind: 'human', name: '周荻', role: '供应链', origin: LAN },
-    })
-    updateMember(draft, { roomId: room.id, memberId: 'm_bot_returns', patch: { origin: LAN, reach: 'lan' } })
 
     const say = (authorId, text) => postMessage(draft, { roomId: room.id, authorId, text })
     say(draft.self.id, '这版预算我按 45 天账期算的，@账期 agent 先看缺口。')
     say('m_bot_cashflow', '45 天账期下，10 月缺口约 82 万，集中在第二周。把两笔大额应付款挪到 11/03，缺口降到 31 万。')
-    say('h_zhou', '退货这版按 6.2% 算的，但华东仓上周开始冒到 7.1%。')
-    say('m_bot_returns', '7.1% 里 62% 是三款夏装尾货。按现在节奏，Q4 退货成本会多 19 万。')
+    say('m_bot_returns', '退货率这版按 6.2% 算的。按现在节奏，Q4 退货成本会多 19 万。')
     say(draft.self.id, '那就先把尾货清仓价挂出来，预算按 7.1% 重算一版。')
-    // 最后两条留成未读，截图里才有徽标与提醒可看。
-    markRead(draft, { roomId: room.id, memberId: draft.self.id, seq: room.nextSeq - 3 })
+    // 留一条未读：截图里才有徽标与提醒可看。
+    markRead(draft, { roomId: room.id, memberId: draft.self.id, seq: room.nextSeq - 2 })
     return room
   })
 }
 
-export async function bootFixture() {
-  const dir = await mkdtemp(join(tmpdir(), 'chatroom-preview-'))
+async function bootSide({ dir, reply, port }) {
   const store = await Store.open(dir)
-  const ctx = fakeCtx(dir)
+  const ctx = fakeCtx(dir, { reply })
   const runner = createBotRunner(ctx, { log })
-  const speaker = createSpeaker({ store, runner, log })
-  seed(store)
-
+  const lan = createLanBridge({ store, runner, log, machine: '林岸的 MacBook' })
+  const speaker = createSpeaker({ store, runner, log, dispatchRemote: lan.enqueue })
+  lan.setSpeaker(speaker)
+  await lan.start(port)
   return {
     store,
+    lan,
     speaker,
+    snapshot: () => lan.view(),
+    command: (payload) => dispatch({ store, speaker, lan, command: payload }),
+    dispose: () => lan.dispose(),
+  }
+}
+
+/** 宿主：本机房间 + 两个本地 agent，然后等另一台机器加入。 */
+export async function bootFixture({ port } = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-preview-'))
+  const side = await bootSide({
     dir,
-    snapshot: () => project(store.state),
-    command: (payload) => dispatch({ store, speaker, command: payload }),
+    port,
+    reply: '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。',
+  })
+  const room = seedHost(side.store)
+  return {
+    ...side,
+    dir,
+    roomId: room.id,
+    code: room.code,
+    lanPort: side.lan.status().port,
     /** 截「消息提醒」用：真的往屋里放一条 agent 消息，让长轮询把它推给界面。 */
     nudge() {
-      store.commit((draft) => {
-        const room = draft.rooms.find((row) => row.id === draft.activeRoomId) ?? draft.rooms[0]
-        postMessage(draft, {
-          roomId: room.id,
-          authorId: 'm_bot_cashflow',
-          text: '11/03 那两笔挪款我写进合同条款了，缺口才算真的降到 31 万。',
-        })
+      const text = '11/03 那两笔挪款我写进合同条款了，缺口才算真的降到 31 万。'
+      side.store.commit((draft) => {
+        const target = draft.rooms.find((row) => row.id === draft.activeRoomId) ?? draft.rooms[0]
+        // 反复跑截图脚本时不要越堆越多：上一次的同一条提醒先撤掉。
+        target.messages = target.messages.filter((message) => message.text !== text)
+        postMessage(draft, { roomId: target.id, authorId: 'm_bot_cashflow', text })
       })
-      return project(store.state)
+      return side.snapshot()
     },
   }
+}
+
+/**
+ * 加入者：另一台机器。它先有自己的房间与 agent，再按房间码加入宿主的屋子。
+ * 之后两边都在线 —— 截图里的远程成员、跨机派发都来自这条真实链路。
+ */
+export async function bootGuest({ host = '127.0.0.1', port, code, name = '周荻', botName = '尾货 agent', machine = '周荻的 MacBook' }) {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-guest-'))
+  const side = await bootSide({
+    dir,
+    reply: '尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。',
+  })
+  await side.command({ action: 'self.rename', input: { name } })
+  const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
+  await side.command({
+    action: 'member.createBot',
+    input: { roomId: local.rooms[0].id, name: botName, role: '拆尾货与退货结构' },
+  })
+  await side.command({
+    action: 'lan.join',
+    input: { host, port, code, machine },
+  })
+  return { ...side, dir }
+}
+
+/** 把两台机器之间这场对话补完：加入方说一句、宿主 @ 加入方的 agent，它回一句。 */
+export async function warmUp(host, guest) {
+  const view = guest.snapshot()
+  const mirror = view.rooms.find((room) => room.remote)
+  if (!mirror) throw new Error('加入方没有镜像房间')
+  await guest.command({
+    action: 'msg.send',
+    input: { roomId: mirror.id, text: '我这边先把退货率放上来：上周华东仓冒到 7.1%。' },
+  })
+  await host.command({
+    action: 'msg.send',
+    input: { roomId: host.roomId, text: '@尾货 agent 7.1% 里尾货占多少？' },
+  })
+  // 一轮跨机派发：宿主 → 加入方跑自己的 agent → 回传落库。等它落定再截图。
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const room = host.store.state.rooms.find((row) => row.id === host.roomId)
+    if (room.messages.some((message) => message.authorName === '尾货 agent')) break
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  return { mirror }
 }

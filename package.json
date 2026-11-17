@@ -31,10 +31,11 @@
     "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "scripts": {
-    "test": "node --test test/rooms.test.mjs test/host.integration.test.mjs test/client.bundle.test.mjs",
+    "test": "node --test test/rooms.test.mjs test/host.integration.test.mjs test/lan.test.mjs test/client.bundle.test.mjs",
     "preview:build": "node tools/preview/build.mjs",
     "preview:serve": "node tools/preview/server.mjs",
-    "preview:shots": "node tools/preview/shoot.mjs"
+    "preview:shots": "node tools/preview/shoot.mjs",
+    "lan:check": "node tools/lan-check.mjs"
   },
   "dsh": {
     "bundle": {

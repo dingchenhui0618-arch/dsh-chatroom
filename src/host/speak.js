@@ -1,4 +1,4 @@
-import { botsOf, getMember, getRoom, mentionedBots, postMessage, transcriptOf } from './rooms.js'
+import { botsOf, getMember, getRoom, isRemoteMember, mentionedBots, postMessage, transcriptOf } from './rooms.js'
 
 /**
  * 三条发言规则并行存在 —— 这就是它们的调度器。
@@ -15,6 +15,20 @@ import { botsOf, getMember, getRoom, mentionedBots, postMessage, transcriptOf } 
 
 const fail = (code, message) => {
   throw Object.assign(new Error(message ?? code), { code })
+}
+
+/**
+ * 派发出去等对面机器时也得能喊停：本机点「停下这一轮」就不要再等。
+ * 宿主那边的 assignment 会在超时后自己收尾，所以这里丢下它不会留下半个回合。
+ */
+function withAbort(promise, signal) {
+  if (!signal) return promise
+  const aborted = new Promise((_, reject) => {
+    const stop = () => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))
+    if (signal.aborted) stop()
+    else signal.addEventListener('abort', stop, { once: true })
+  })
+  return Promise.race([promise, aborted])
 }
 
 function buildPrompt({ room, bot, at }) {
@@ -58,7 +72,7 @@ function buildPrompt({ room, bot, at }) {
     .join('\n')
 }
 
-export function createSpeaker({ store, runner, log = () => {} }) {
+export function createSpeaker({ store, runner, dispatchRemote = null, log = () => {} }) {
   const running = new Set()
   const aborts = new Map()
 
@@ -81,8 +95,11 @@ export function createSpeaker({ store, runner, log = () => {} }) {
     const room = roomOrFail(roomId)
     const bot = getMember(room, botId)
     if (!bot || bot.kind !== 'bot') return
-    const directoryBot = store.inspect((state) => state.bots.find((row) => row.id === bot.botId))
-    if (!directoryBot) {
+    // 远程 agent 的目录不在本机：它的 session、模型、记忆都在它自己那台机器上，
+    // 本机只负责「这一轮轮到你了」把 prompt 派过去。
+    const remote = isRemoteMember(bot)
+    const directoryBot = remote ? null : store.inspect((state) => state.bots.find((row) => row.id === bot.botId))
+    if (!remote && !directoryBot) {
       log('bot_missing', botId)
       return
     }
@@ -91,11 +108,20 @@ export function createSpeaker({ store, runner, log = () => {} }) {
     const controller = new AbortController()
     aborts.set(roomId, controller)
     try {
-      const { text } = await runner.say(
-        { ...directoryBot, cwd: directoryBot.cwd ?? undefined },
-        buildPrompt({ room: roomOrFail(roomId), bot, at }),
-        { signal: controller.signal },
-      )
+      const prompt = buildPrompt({ room: roomOrFail(roomId), bot, at })
+      let text
+      if (remote) {
+        if (typeof dispatchRemote !== 'function') {
+          fail('lan_unavailable', '这台机器没有连上局域网，无法请远程 agent 发言。')
+        }
+        const result = await withAbort(
+          dispatchRemote({ roomId, member: bot, prompt, signal: controller.signal }),
+          controller.signal,
+        )
+        text = result?.text
+      } else {
+        text = (await runner.say({ ...directoryBot, cwd: directoryBot.cwd ?? undefined }, prompt, { signal: controller.signal })).text
+      }
       complete(roomId, directoryBot, botId, text)
       const fresh = roomOrFail(roomId)
       const created = fresh.messages.at(-1)
@@ -131,9 +157,12 @@ export function createSpeaker({ store, runner, log = () => {} }) {
     store.commit((state) => {
       const room = getRoom(state, roomId)
       if (!room) return
-      directoryBot.lastSpokeAt = new Date().toISOString()
-      if (state.bots.includes(directoryBot)) directoryBot.lastError = null
-      postMessage(state, { roomId, authorId: memberId, text, origin: { kind: 'local' } })
+      if (directoryBot) {
+        directoryBot.lastSpokeAt = new Date().toISOString()
+        if (state.bots.includes(directoryBot)) directoryBot.lastError = null
+      }
+      // 不传 origin：postMessage 会用发言人自己的 origin，远程 agent 的话不会被标成本机。
+      postMessage(state, { roomId, authorId: memberId, text })
     })
   }
 
