@@ -695,15 +695,53 @@ try {
       if (before.label !== '重试') throw new Error(`重试按钮的文字不对：${before.label}`)
       if (before.disabled) throw new Error('这一轮已经结束了，重试按钮不该是禁用的')
 
-      const clicked = await evaluate(cdp, sessionId, `(() => {
-        const row = [...document.querySelectorAll('.cr-msg')].find((el) => el.classList.contains('cr-error'))
-        const button = row && row.querySelector('.cr-msg-actions button')
-        if (!button) return false
-        button.click()
-        return true
+      // 同一份状态在会话界面里再开一页：浮窗本来会把失败消息过滤掉（只留最近六条），
+      // 这条要证明「失败不会被折叠掉」，并且浮窗里那个「重试」真的点得动。
+      const { targetId: floatTarget } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+      const { sessionId: floatSession } = await cdp.send('Target.attachToTarget', { targetId: floatTarget, flatten: true })
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+        floatSession,
+      )
+      await cdp.send('Page.enable', {}, floatSession)
+      await cdp.send('Runtime.enable', {}, floatSession)
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?view=session` }, floatSession)
+      await waitForSelector(cdp, floatSession, '.cr-float-pill')
+      await evaluate(cdp, floatSession, `document.querySelector('.cr-float-pill').click()`)
+      await waitForSelector(cdp, floatSession, '.cr-float-failed')
+      const inFloat = await evaluate(cdp, floatSession, `(() => {
+        const row = document.querySelector('.cr-float-failed')
+        const buttons = [...row.querySelectorAll('button')]
+        return {
+          text: row.textContent,
+          buttons: buttons.length,
+          label: buttons[0] ? buttons[0].textContent.trim() : null,
+        }
       })()`)
-      if (!clicked) throw new Error('点不到那个重试按钮')
+      if (!/没回上来/.test(inFloat.text)) throw new Error(`浮窗里没显示失败：${inFloat.text}`)
+      if (inFloat.buttons !== 1 || inFloat.label !== '重试') {
+        throw new Error(`浮窗里的重试入口不对：${JSON.stringify(inFloat)}`)
+      }
+      await evaluate(cdp, floatSession, `document.querySelector('.cr-float-failed button').click()`)
+      let floated = null
+      for (let i = 0; i < 60; i += 1) {
+        floated = await evaluate(cdp, floatSession, `(() => {
+          const rows = [...document.querySelectorAll('.cr-float-msg')]
+          const last = rows[rows.length - 1]
+          return {
+            failed: document.querySelectorAll('.cr-float-failed').length,
+            lastText: last ? last.textContent : '',
+          }
+        })()`)
+        if (floated.failed === 0 && /缺口 82 万/.test(floated.lastText)) break
+        await sleep(100)
+      }
+      await cdp.send('Target.closeTarget', { targetId: floatTarget })
+      if (floated.failed !== 0) throw new Error('重试成功后浮窗里还挂着那条失败')
+      if (!/缺口 82 万/.test(floated.lastText)) throw new Error(`浮窗里没等到重试的回复：${floated.lastText}`)
 
+      // 回到面板这一页：同一间屋子里的新回复也得跟着长出来（不是只在浮窗里）。
       let after = null
       for (let i = 0; i < 60; i += 1) {
         after = await evaluate(cdp, sessionId, `(() => {
@@ -718,10 +756,10 @@ try {
         if (after.count > before.count && !/没回上来/.test(after.lastText)) break
         await sleep(100)
       }
-      if (after.count <= before.count) throw new Error('点了重试以后没有新消息进来')
+      if (after.count <= before.count) throw new Error('重试以后面板里没有新消息进来')
       if (after.errorRows !== 1) throw new Error(`失败占位不该被抹掉或翻倍：${after.errorRows} 条`)
       if (!/缺口 82 万/.test(after.lastText)) throw new Error(`重试后落库的不是那个 agent 的话：${after.lastText}`)
-      console.log('verified — 失败留占位，点重试只重跑那一个 agent，回复接在后面')
+      console.log('verified — 失败留占位，点重试只重跑那一个 agent，回复接在后面（面板与浮窗都验过）')
     }
     await cdp.send('Target.closeTarget', { targetId })
   }
