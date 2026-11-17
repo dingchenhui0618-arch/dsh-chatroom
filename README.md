@@ -136,6 +136,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 （`icon` 字段或 `./icon` 导出、`./locale/*.json` 导出）：缺了它们，插件管理页只能显示默认图 +
 英文包名，这三样以前一样都没有。`test/manifest.test.mjs` 盯着这条不过期。
 
+![插件图标](docs/icon.png)
+
 ## 用法
 
 1. 侧栏 → 聊天室 → **新建房间**，填房间名（和可选的主题）。
