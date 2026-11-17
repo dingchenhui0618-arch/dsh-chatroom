@@ -85,7 +85,13 @@ export function project(state, extra = {}) {
       // 镜像房间的未读由宿主按「我们这个 peer」算好随投影带过来，本地不重算：
       // 本地没有宿主的 reads 表，重算只会得到「全都没读」。
       unread: room.remote && typeof room.unread === 'number' ? room.unread : unreadOf(room, viewerId),
-      members: room.members,
+      // 席位是宿主内部用来认「哪台机器是哪个人」的（那条 link 的 id），
+      // 不必也不该推给任何一台加入方：投影里删掉。
+      members: room.members.map((member) => {
+        const row = { ...member }
+        delete row.seat
+        return row
+      }),
       messages: room.messages.slice(-PROJECTION_MESSAGES),
       // 镜像房间的「还有更早的」由宿主说了算：本机只存着它发来的那 200 条，
       // 按本地条数重算永远是 false —— 加入方就会永远翻不回更早的历史。

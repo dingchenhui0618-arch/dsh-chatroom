@@ -19,6 +19,14 @@ export const DEFAULT_RULES = {
 
 const LIMITS = { name: 60, topic: 400, role: 200, text: 8000, members: 60, messages: 4000 }
 
+/**
+ * 一间屋最多记住几台机器的身份。
+ *
+ * 走掉的机器回来是「同一个人」，所以要记；但记下的名单不能无限攒 ——
+ * 来的都是熟人的局域网，上限 8 台已经比一屋子坐得下的机器多一倍。
+ */
+const SEAT_LIMIT = 8
+
 const fail = (code, message) => {
   throw Object.assign(new Error(message ?? code), { code })
 }
@@ -136,6 +144,9 @@ export function addMember(state, { roomId, member } = {}) {
     joinedAt: new Date().toISOString(),
     // 来源决定初始在线态：LAN 进来的人在「别的机器上」，不能标成本机在线。
     reach: member.reach ?? (member.kind === 'bot' ? 'local' : origin.kind === 'lan' ? 'lan' : 'here'),
+    // 席位：这条落盘的 link 在这间屋里的身份。peerId 是进程现发的（重启就没意义），
+    // instance 不会变 —— 宿主重启或清扫之后，靠它把同一组成员 id 接回去。
+    seat: typeof member.seat === 'string' && member.seat ? member.seat.slice(0, 64) : null,
   }
   room.members.push(row)
   return row
@@ -161,13 +172,82 @@ export function membersOfPeer(room, peerId) {
   return room.members.filter((member) => member.owner === peerId)
 }
 
-export function removePeer(state, { roomId, peerId } = {}) {
+/** 席位表里那条 link 的身份；没有就 null（旧 state.json 里没有 lanSeats 也照常工作）。 */
+export function seatOf(room, instance) {
+  if (!instance) return null
+  return room.lanSeats?.[instance] ?? null
+}
+
+/**
+ * 记下一条 link 在这间屋里的身份。
+ *
+ * 记的是成员 id：人与他带的 agent 各一个。回来时按这些 id 重新落座，
+ * 历史消息的 authorId 才对得上，已读游标也还认得出来。
+ */
+export function rememberSeat(room, instance, seat) {
+  if (!instance) return null
+  room.lanSeats ??= {}
+  room.lanSeats[instance] = {
+    human: seat?.human ?? null,
+    agents: { ...(seat?.agents ?? {}) },
+    chair: seat?.chair ?? null,
+    machine: seat?.machine ?? null,
+    seenAt: Date.now(),
+  }
+  trimSeats(room)
+  return room.lanSeats[instance]
+}
+
+/** 只留最近的 SEAT_LIMIT 台：被丢掉的席位连它的已读游标一起清，别留孤儿。 */
+function trimSeats(room) {
+  const seats = room.lanSeats
+  if (!seats) return
+  const order = Object.keys(seats).sort((a, b) => (seats[a]?.seenAt ?? 0) - (seats[b]?.seenAt ?? 0))
+  while (order.length > SEAT_LIMIT) {
+    const key = order.shift()
+    const seat = seats[key]
+    if (seat) {
+      for (const id of [seat.human, ...Object.values(seat.agents ?? {})]) if (id) delete room.reads[id]
+    }
+    delete seats[key]
+  }
+}
+
+/**
+ * 某个 peer 在这间屋子里占的成员整组撤掉（断线超时、主动离开、宿主重启清理）。
+ *
+ * keepSeat=true：先把这一组的身份记进席位表再撤人。加进来那台机器只是暂时不在，
+ * 它回来时成员 id 不变 —— 否则它自己过去说的话会被当成别人说的，
+ * 整段历史也会因为游标归零重新变成未读。
+ * keepSeat=false（主动离开）：连席位一起忘掉，人已经明确退出了。
+ */
+export function removePeer(state, { roomId, peerId, keepSeat = false } = {}) {
   const room = requireRoom(state, roomId)
   const removed = membersOfPeer(room, peerId)
+  const seats = new Map()
+  for (const member of removed) {
+    if (!member.seat) continue
+    const group = seats.get(member.seat) ?? { human: null, agents: {}, chair: null, machine: null }
+    if (member.kind === 'human') {
+      group.human = member.id
+      group.machine = member.origin?.machine ?? null
+    } else if (member.botId) group.agents[member.botId] = member.id
+    // 椅子存的是成员 id：人暂时不在，椅子不该就此空掉，等它回来还坐原处。
+    if (room.rules.chairId === member.id) group.chair = member.id
+    seats.set(member.seat, group)
+  }
+  for (const [key, group] of seats) {
+    if (keepSeat) rememberSeat(room, key, group)
+    else if (room.lanSeats) {
+      for (const id of [group.human, ...Object.values(group.agents)]) if (id) delete room.reads[id]
+      delete room.lanSeats[key]
+    }
+  }
   for (const member of removed) {
     room.members = room.members.filter((row) => row.id !== member.id)
     if (room.rules.chairId === member.id) room.rules.chairId = null
-    delete room.reads[member.id]
+    // 有席位的成员，游标要留着：回来时不用把整段历史重新数一遍未读。
+    if (!(keepSeat && member.seat)) delete room.reads[member.id]
   }
   return removed
 }

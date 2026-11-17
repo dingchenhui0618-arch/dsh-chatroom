@@ -8,8 +8,10 @@ import {
   markRead,
   membersOfPeer,
   postMessage,
+  rememberSeat,
   removeMember,
   removePeer,
+  seatOf,
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
 import { pageMessages, project } from './project.js'
@@ -243,8 +245,11 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
    *
    * 为什么需要这一步而不是只在加入时报一次：新装的机器上一个 agent 都没有，
    * 人往往是**先挤进屋、才想起要带谁**。只认加入那一刻的名单，屋里就永远只有他一个人。
+   *
+   * seat 是这条 link 上次离开时记下的席位：它带的 agent 成员 id 直接沿用，
+   * 否则重启回来它自己的 agent 会变成「另一个 agent」，过去说的话也就不属于它了。
    */
-  function reconcileAgents(draft, peer, agents, origin) {
+  function reconcileAgents(draft, peer, agents, origin, seat = null) {
     const room = getRoom(draft, peer.roomId)
     if (!room) fail('room_not_found', '这间屋子已经不在了。')
     const declared = (Array.isArray(agents) ? agents : [])
@@ -275,10 +280,13 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         nextAgents.push({ memberId: existing.id, agentId: agent.key, name: existing.name })
         continue
       }
+      const reused = seat?.agents?.[agent.key]
+      const id =
+        reused && !room.members.some((member) => member.id === reused) ? reused : agentMemberId(peer, agent.key)
       const row = addMember(draft, {
         roomId: room.id,
         member: {
-          id: agentMemberId(peer, agent.key),
+          id,
           kind: 'bot',
           name: agent.name || 'agent',
           role: agent.role,
@@ -287,6 +295,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           origin,
           owner: peer.id,
           reach: 'lan',
+          seat: peer.instance ?? null,
         },
       })
       nextAgents.push({ memberId: row.id, agentId: agent.key, name: row.name })
@@ -333,8 +342,12 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
      *
      * 接过成员 id 还有两个想要的副作用：已读游标连着（不会把整段历史重新标成未读），
      * 历史消息的 authorId 也对得上（重启不会把自己说过的话变成别人说的）。
+     *
+     * 上一代 peer 已经不在 map 里了（宿主自己重启过，或者断线超过清扫时间），
+     * 就退回席位表：那条 link 上次离开时留下的成员 id 还在，接上去还是同一个人。
      */
     const instance = String(rawInstance ?? '').trim().slice(0, 64)
+    const seat = seatOf(room, instance)
     const adopted = []
     if (instance) {
       for (const other of [...peers.values()]) {
@@ -395,27 +408,52 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         })
       }
       // 接过来的那个人还是同一个人：名字以这次上报为准，成员 id 不动。
-      const inherited = adopted.length
-        ? getRoom(draft, room.id).members.find((member) => member.owner === peerId && member.kind === 'human')
-        : null
+      // 上一代 peer 已经不在时（宿主重启过 / 被清扫过），就照席位表里记的那个 id 重新落座 ——
+      // 席位是有意的「记下 id 等它回来」，不是「找到还在的成员」。
+      const live = getRoom(draft, room.id).members
+      const known =
+        live.find((member) => member.owner === peerId && member.kind === 'human') ??
+        (seat?.human ? live.find((member) => member.id === seat.human && member.kind === 'human') : null) ??
+        null
       const human =
-        inherited ??
+        known ??
         addMember(draft, {
           roomId: room.id,
           member: {
-            id: `h_${peerId.slice(2, 12)}`,
+            id: seat?.human ?? `h_${peerId.slice(2, 12)}`,
             kind: 'human',
             name: humanName,
             role: '',
             origin,
             owner: peerId,
             reach: 'lan',
+            seat: instance || null,
           },
         })
+      // 席位落座的这一组：owner 换成新的 peerId，席位标记照旧（它靠 instance 认人）。
+      human.owner = peerId
+      human.seat = instance || human.seat || null
       if (human.name !== humanName) human.name = humanName
       peer.selfMemberId = human.id
       // 加入那一刻报上来的 agent 名单走同一套对账，和「加入之后补报」共用一条路。
-      reconcileAgents(draft, peer, agents, origin)
+      reconcileAgents(draft, peer, agents, origin, seat)
+      // 人暂时不在时被让空的椅子，等人回来还给他。
+      const after = getRoom(draft, room.id)
+      if (seat?.chair && after.rules.chairId === null && after.members.some((member) => member.id === seat.chair)) {
+        after.rules.chairId = seat.chair
+      }
+      // 席位随时对齐到这一代真实的成员 id：名字/agent 名单都可能变，接回去的必须是现在这组。
+      if (instance) {
+        const mine = membersOfPeer(after, peerId)
+        const agentsByName = {}
+        for (const member of mine) if (member.kind === 'bot' && member.botId) agentsByName[member.botId] = member.id
+        rememberSeat(after, instance, {
+          human: human.id,
+          agents: agentsByName,
+          chair: mine.some((member) => member.id === after.rules.chairId) ? after.rules.chairId : null,
+          machine: label,
+        })
+      }
     })
 
     peers.set(peerId, peer)
@@ -668,7 +706,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         const peer = requirePeer(input.peerId)
         peers.delete(peer.id)
         store.commit((draft) => {
-          removePeer(draft, { roomId: peer.roomId, peerId: peer.id })
+          // 主动离开：席位一并忘掉。人已经明确退出这间屋，下次进来该是新客。
+          removePeer(draft, { roomId: peer.roomId, peerId: peer.id, keepSeat: false })
         })
         wake()
         value = { left: true }
@@ -716,13 +755,13 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     store.commit((draft) => {
       for (const room of draft.rooms) {
         if (room.remote) continue
-        const stale = room.members.filter((member) => member.owner && member.owner !== 'local')
-        if (!stale.length) continue
-        removed += stale.length
-        room.members = room.members.filter((member) => !member.owner || member.owner === 'local')
-        for (const member of stale) {
-          if (room.rules.chairId === member.id) room.rules.chairId = null
-          delete room.reads[member.id]
+        const owners = new Set(
+          room.members.filter((member) => member.owner && member.owner !== 'local').map((member) => member.owner),
+        )
+        // 人先撤，身份留下（keepSeat）：那台机器回来时还是同一个人 —— 它自己过去说的话、
+        // 已读游标、椅子上的位置都还认得出它。peerId 是上一个进程发的，早就没意义了。
+        for (const owner of owners) {
+          removed += removePeer(draft, { roomId: room.id, peerId: owner, keepSeat: true }).length
         }
       }
     })
@@ -743,7 +782,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       peers.delete(peer.id)
       try {
         store.commit((draft) => {
-          removePeer(draft, { roomId: peer.roomId, peerId: peer.id })
+          // 只是暂时不见了（关窗口、拔网线）：席位留着，回来还是同一个人。
+          removePeer(draft, { roomId: peer.roomId, peerId: peer.id, keepSeat: true })
         })
       } catch (error) {
         // 屋子已经被解散：成员跟着屋子一起没了，不是错误。

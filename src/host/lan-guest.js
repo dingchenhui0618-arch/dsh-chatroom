@@ -120,8 +120,23 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     draft.activeRoomId = next.id
   }
 
+  /**
+   * 关停途中的写入。
+   *
+   * 插件被关掉/重载时 store 先关、循环还在飞：回程里的状态更新会抛 `closed`。
+   * 那不是错误；可它一旦从后台循环里逃出去就是一次未处理的拒绝 ——
+   * 而 Node 把未处理的拒绝当未捕获异常，会把整个 DSH 进程带走。
+   */
+  function quietCommit(mutate) {
+    try {
+      store.commit(mutate)
+    } catch (error) {
+      if (error?.code !== 'closed') throw error
+    }
+  }
+
   function markStatus(linkId, { status, error = null, peerId, selfMemberId }) {
-    store.commit((draft) => {
+    quietCommit((draft) => {
       const link = (draft.links ?? []).find((row) => row.id === linkId)
       if (!link) return
       if (status) link.status = status
@@ -141,7 +156,7 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
   function markHostOld(linkId, hostOld) {
     const link = linkById(linkId)
     if (!link || Boolean(link.hostOld) === hostOld) return
-    store.commit((draft) => {
+    quietCommit((draft) => {
       const row = (draft.links ?? []).find((item) => item.id === linkId)
       if (row) row.hostOld = hostOld
     })
@@ -307,8 +322,11 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     const runtime = runtimeOf(linkId)
     if (runtime.started) return
     runtime.started = true
-    void stateLoop(linkId, runtime)
-    void assignmentLoop(linkId, runtime)
+    // 两个后台循环的最后一道口子：真漏出异常也只记一条日志，不让它变成未处理的拒绝
+    // （那会被 Node 当成未捕获异常，直接把宿主进程带走）。
+    const failed = (loop) => (error) => log(loop, { error: String(error?.message ?? error) })
+    void stateLoop(linkId, runtime).catch(failed('lan_state_loop_failed'))
+    void assignmentLoop(linkId, runtime).catch(failed('lan_assignment_loop_failed'))
   }
 
   async function stateLoop(linkId, runtime) {
