@@ -40,6 +40,7 @@ const shots = [
     view: 'panel',
     waitFor: '.cr-msg',
     open: '邀请',
+    verify: 'name-edit',
     caption: '邀请另一台机器：局域网地址 + 房间码就是全部凭据，另一台机器填这两样就能进来',
   },
   {
@@ -78,6 +79,7 @@ const shots = [
     view: 'panel',
     setup: '/preview/third',
     waitFor: '.cr-msg',
+    settle: 'read',
     verify: 'three-parties',
     caption: '三台机器同屋：本机 + 两台 LAN 机器各带自己的 agent，成员与消息都按机器名区分',
   },
@@ -274,6 +276,20 @@ try {
       if (!opened) throw new Error(`点不到：${shot.open}`)
       await sleep(350)
     }
+    // 截图要截「稳定下来的界面」，不是「刚好路过的中间态」：三台机器那张图里，
+    // 远程 agent 的回复会在页面加载之后才落库，未读徽标会在面板可见的情况下
+    // 自动清零 —— 等它清完再拍，否则同一份代码两次会拍出带徽标和不带徽标两张。
+    if (shot.settle === 'read') {
+      for (let i = 0; i < 40; i += 1) {
+        const left = await evaluate(
+          cdp,
+          sessionId,
+          `document.querySelectorAll('.cr-badge, .cr-nav-badge').length`,
+        )
+        if (left === 0) break
+        await sleep(100)
+      }
+    }
     await sleep(250)
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId)
     const file = join(outDir, `${shot.name}.png`)
@@ -299,6 +315,66 @@ try {
       }
       if (!cleared) throw new Error('面板可见时新消息没有自动算已读')
       console.log('verified — 面板可见时新消息直接算已读（未读不会涨）')
+    }
+
+    // 名字是身份的一部分：输入框里必须是坐在键盘前的这个人，改完要真的落到宿主
+    // （成员列换成新名字），再改回去，别把后面的截图带脏。
+    // 断言只认成员列，不认输入框：输入框里还有你正在打的草稿，看它等于什么都没证明。
+    if (shot.verify === 'name-edit') {
+      const memberNames = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `Array.from(document.querySelectorAll('.cr-member-name')).map((el) => el.textContent)`,
+        )
+      const readName = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const el = document.querySelector('.cr-name-row input')
+            return el ? el.value : null
+          })()`,
+        )
+      const typeName = (value) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const el = document.querySelector('.cr-name-row input')
+            if (!el) return false
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+            el.focus()
+            setter.call(el, ${JSON.stringify(value)})
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+            el.blur()
+            return true
+          })()`,
+        )
+      const waitForMember = async (label, gone) => {
+        for (let i = 0; i < 60; i += 1) {
+          const seen = await memberNames()
+          if (seen.includes(label) && !seen.includes(gone)) return true
+          await sleep(100)
+        }
+        return false
+      }
+
+      const before = await readName()
+      if (before !== '林岸') throw new Error(`名字输入框里应该是本机这个人的名字，实际是 ${JSON.stringify(before)}`)
+
+      await typeName('林岸·改')
+      if (!(await waitForMember('林岸·改', '林岸'))) {
+        throw new Error(`改完名字没落到宿主，成员列是 ${JSON.stringify(await memberNames())}`)
+      }
+      // 等成员列先变，再改回去：提交时比的是「和当前名字一样就不发请求」，
+      // 拿着旧快照去改会正好撞上这条。
+      await typeName('林岸')
+      if (!(await waitForMember('林岸', '林岸·改'))) {
+        throw new Error(`名字没改回去，后面的截图会带着脏状态：${JSON.stringify(await memberNames())}`)
+      }
+      if ((await readName()) !== '林岸') throw new Error('改完之后输入框没有回到当前名字')
+      console.log('verified — 名字可改：成员列当场换名字，再改回来')
     }
 
     // 截图只证明「出现了未读」，还得证明它「会消」：展开浮窗就等于看过了，

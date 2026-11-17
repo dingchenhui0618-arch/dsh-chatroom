@@ -352,6 +352,51 @@ test('宿主解散房间：加入方留一张能清理的墓碑，不是发不�
   }
 })
 
+test('进屋之后再改名：宿主那边的成员当场换名字，不会被当成第二个人', async () => {
+  const host = await boot('host-rename')
+  const guest = await boot('guest-rename')
+  try {
+    const created = await command(host, 'room.create', { name: '改名的屋子' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(guest, 'room.create', { name: '客' })
+    // 不先改名就进屋：两边都叫「我」，宿主只能用机器名兜底。
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+    const before = await snapshot(host)
+    const room0 = before.rooms.find((row) => row.id === roomId)
+    const strangers = room0.members.filter((row) => row.kind === 'human' && row.origin.kind === 'lan')
+    assert.equal(strangers.length, 1)
+    const stranger = strangers[0]
+    assert.notEqual(stranger.name, '我', '同名时宿主必须用机器名兜底，屋里不能有两个「我」')
+    const memberCount = room0.members.length
+
+    // 进屋之后再改：走 /lan/self，改的是同一条成员记录。
+    await command(guest, 'self.rename', { name: '周荻' })
+    const renamed = await until(async () => {
+      const view = await snapshot(host)
+      const room = view.rooms.find((row) => row.id === roomId)
+      const member = room.members.find((row) => row.id === stranger.id)
+      return member && member.name === '周荻' ? room : null
+    }, { label: '宿主看到加入方的新名字' })
+    assert.equal(renamed.members.length, memberCount, '改名不能凭空多一个人')
+    assert.equal(renamed.members.filter((row) => row.name === '周荻').length, 1)
+
+    // 改名之后说的话，落库时用的就是新名字。
+    const mirrorId = (await snapshot(guest)).rooms.find((room) => room.remote).id
+    await command(guest, 'msg.send', { roomId: mirrorId, text: '以后叫我周荻。' })
+    const spoken = await until(async () => {
+      const view = await snapshot(host)
+      const room = view.rooms.find((row) => row.id === roomId)
+      return room.messages.find((message) => message.text.includes('以后叫我周荻'))
+    }, { label: '改名后的发言落库' })
+    assert.equal(spoken.authorName, '周荻')
+    assert.equal(spoken.authorId, stranger.id, '还是同一个成员，不是新成员')
+  } finally {
+    await guest.dispose()
+    await host.dispose()
+  }
+})
+
 test('跑着的宿主会清掉真的关掉的机器，但不会清正在长轮询的那台', async () => {
   // 把 idle 压到 400ms：测试要量的是「清扫逻辑」，不是等 45 秒。
   process.env.DSH_CHATROOM_PEER_IDLE = '400'
