@@ -330,9 +330,17 @@ dsh plugin --profile <你的profile> add github:dingchenhui0618-arch/dsh-chatroo
 dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ```
 
-`github:` 这条 spec 我拿 `npm install github:dingchenhui0618-arch/dsh-chatroom` 在空目录里验过一遍：
-装出来的包 `import('dsh-chatroom')` 直接拿得到 `name` / `inject` / `apply` —— 仓库里已经提交了
-`lib/index.js` 与 `lib/client.js`，不需要先在本机构建。
+`github:` 这条 spec 用真 CLI 走过一遍：临时目录装 `@deepseek-ai/dsh@0.2.2-rc.1`，`DSH_HOME` 指到一个空目录，
+再跑上面那条命令 —— 4.7 秒装完 1 个包，profile 的 `package.json` 里写的是
+`github:dingchenhui0618-arch/dsh-chatroom`，`dsh.profile.bundles` 里自动多了 `dsh-chatroom`（不用再手动启用）。
+接着 `dsh --profile web --port 3411` 真起一份（`DSH_CHATROOM_PORT=4455`）：宿主日志打出
+`[dsh-chatroom] lan_listening 4455`，`/lan/ping` 返回 `serving: true` 和本机名，拿一个不存在的房间码打
+`/lan/join` 得到 `room_not_found`；真 Web 页面的预加载清单里有 `dsh-chatroom/client.js`，取回来与仓库
+`lib/client.js` 同源（只多一行 `sourceMappingURL`）—— 两半都是这个包装出来的。
+
+另外 `npm install github:dingchenhui0618-arch/dsh-chatroom` 装进空目录后，`import('dsh-chatroom')`
+直接拿得到 `name` / `inject` / `apply` —— 仓库里已提交 `lib/index.js` 与 `lib/client.js`，
+不需要先在本机构建。
 
 或者用插件管理器装本地目录（`install_bundle`，target 指向包目录）。装完刷新页面，
 侧栏出现「聊天室」。装好后插件会自动在 `4399` 监听（可用环境变量 `DSH_CHATROOM_PORT` 改）；
@@ -424,6 +432,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | 发行前在 HEAD `588733f` 上从 GitHub `git clone` 到空目录 → `npm install`（5 个包）→ `npm test` **80/80** 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
 | **别人装得上**（`npm pack` 出来的那份能不能被 import） | ✅ 已验证 | `588733f` 上 `npm pack` **38 个文件 / 4.7 MB**（验收截图 `docs/*.png` 随包带上，无 `test` / `tools` / `node_modules` 泄漏），把 tarball 装进空目录后 `import('dsh-chatroom')` 拿得到 `name` / `inject` / `apply`，`icon.svg`、`locale/*.json`、`cordis.patch.yml`、`lib/client.js` 都在，客户端里没有一行 `@deepseek-ai/*`；profile 里跑着的那份与仓库 `lib/`、`src/`、`locale/` 逐文件 SHA256 一致 |
 | **CI 绿**（ubuntu + node 22/24 跑 `npm install` + `npm test`） | ✅ 已验证 | GitHub Actions `test` 两个 job 各 11–12s 通过（`588733f` 上 run `44092415038` success，node 22 / 24 都绿）；同一套用例先在 WSL2 Ubuntu 22.04 / node v22.22.2 上真跑过一遍全绿才让 CI 去跑 |
+| **市场那条安装命令装完就能跑**（不是只装了个包） | ✅ 已验证（真 CLI + 真 DSH web） | 临时目录装 `@deepseek-ai/dsh@0.2.2-rc.1`、`DSH_HOME` 指空目录 → `dsh plugin --profile web add github:dingchenhui0618-arch/dsh-chatroom`：pnpm 4.7 秒装完 1 个包，profile `package.json` 的依赖是 `github:…`、`dsh.profile.bundles` 自动补上 `dsh-chatroom`；`dsh --profile web --port 3411`（`DSH_CHATROOM_PORT=4455`）起来后宿主打 `[dsh-chatroom] lan_listening 4455`、`/lan/ping` 的 `serving` 为 true、用不存在的房间码打 `/lan/join` 得 `room_not_found`，真页面预加载清单含 `dsh-chatroom/client.js`（取回来与 `lib/client.js` 同源，只多一行 `sourceMappingURL`）。代码点没动：`97271b0` 之后只改过文档 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：这一台跑 `node tools/lan-check.mjs host`，真机器上照抄它打印的 guest 命令；两段都过即验收（第二段连「派回我这台跑我自己的 agent」一起验） |
 
