@@ -32,6 +32,7 @@ const shots = [
     name: 'panel',
     view: 'panel',
     waitFor: '.cr-msg',
+    verify: 'panel-read',
     caption: '房间面板：房间列表 / 群聊 / 成员与规则入口；从 LAN 加入的人和他的 agent 带远程 chip',
   },
   {
@@ -68,6 +69,7 @@ const shots = [
     waitFor: '.cr-float-pill',
     nudge: true,
     waitForAfter: '.cr-toast',
+    verify: 'read',
     caption: '新消息提醒：折叠胶囊上的未读数 + 右上角 toast，标题栏前缀同步',
   },
   {
@@ -219,6 +221,64 @@ try {
     const file = join(outDir, `${shot.name}.png`)
     await writeFile(file, Buffer.from(data, 'base64'))
     console.log(`saved ${file} — ${shot.caption}`)
+
+    // 反面：面板就摆在眼前时，新消息应该直接算已读（用户已经看到了）。
+    // 和上面那条一起，才说明「该提醒时提醒、看过了就消」两半都在。
+    if (shot.verify === 'panel-read') {
+      await fetch(`http://127.0.0.1:${shot.port ?? port}/preview/nudge`)
+      let cleared = false
+      for (let i = 0; i < 40; i += 1) {
+        const state = await evaluate(
+          cdp,
+          sessionId,
+          `({ badges: document.querySelectorAll('.cr-badge, .cr-nav-badge').length, title: document.title })`,
+        )
+        if (state.badges === 0 && !String(state.title).startsWith('(')) {
+          cleared = true
+          break
+        }
+        await sleep(100)
+      }
+      if (!cleared) throw new Error('面板可见时新消息没有自动算已读')
+      console.log('verified — 面板可见时新消息直接算已读（未读不会涨）')
+    }
+
+    // 截图只证明「出现了未读」，还得证明它「会消」：展开浮窗就等于看过了，
+    // 徽标和标题前缀都该归零。这条断言跑在真实渲染的页面里，和截图同一份代码。
+    if (shot.verify === 'read') {
+      // 先确认「该有未读」：没有未读的截图证明不了提醒链路，后一步的清零也就成了空跑。
+      const before = await evaluate(
+        cdp,
+        sessionId,
+        `({ badges: document.querySelectorAll('.cr-badge, .cr-nav-badge').length, title: document.title })`,
+      )
+      if (!(before.badges > 0 || String(before.title).startsWith('('))) {
+        throw new Error(`通知没有出现未读：${JSON.stringify(before)}`)
+      }
+      const opened = await evaluate(cdp, sessionId, `(() => {
+        const node = document.querySelector('.cr-float-pill')
+        if (!node) return false
+        node.click()
+        return true
+      })()`)
+      if (!opened) throw new Error('点不开浮窗，读不到已读路径')
+      let cleared = false
+      for (let i = 0; i < 60; i += 1) {
+        const left = await evaluate(
+          cdp,
+          sessionId,
+          `document.querySelectorAll('.cr-badge, .cr-nav-badge').length`,
+        )
+        const title = await evaluate(cdp, sessionId, 'document.title')
+        if (left === 0 && !String(title).startsWith('(')) {
+          cleared = true
+          break
+        }
+        await sleep(100)
+      }
+      if (!cleared) throw new Error('展开浮窗后未读没有清零')
+      console.log('verified — 展开浮窗后未读归零（徽标与标题前缀都落回去）')
+    }
     await cdp.send('Target.closeTarget', { targetId })
   }
 

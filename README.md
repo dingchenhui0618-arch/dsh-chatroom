@@ -40,7 +40,9 @@
 ![消息提醒](docs/notify.png)
 
 **消息提醒**：新消息进来时侧栏图标、悬浮胶囊、标题栏开关都带未读数，右上角给一条 toast，
-页面标题前缀同步成 `(1) …`（`document.title`）。
+页面标题前缀同步成 `(1) …`（`document.title`）。这些数字也会落回去：面板正停在那间屋子上、
+或者展开浮窗（都等于「看过了」），游标就推到最新一条；面板被切走、标签页在后台时**不会**替你清，
+否则提醒就废了。
 
 ![宿主解散后的加入方](docs/gone.png)
 
@@ -150,7 +152,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | LAN 解散（宿主解散 → 加入方留墓碑、只能移除，不是死胡同） | ✅ 已验证 | 同上：`remote_room_gone` + 移除后 `links` 清空 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
-| 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png` |
+| 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
+| 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/gone.png` |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP 上验过 | 需要你有第二台机器时跑一次 `tools/lan-check.mjs` |
