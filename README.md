@@ -236,6 +236,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **全员轮次跨两台机器**：三台机器各一个 agent、预算正好 3，一轮里恰好各说一次，没有重复派发 | ✅ 已验证 | 同上：断言 Claude / 阿甲 / 阿乙 各一条、`prompts` 各 1；等 600ms 后仍只有 3 条 |
 | **主持人跨机器**：主席是 B 那台机器的 agent，它回复里 @ 了 A 那台机器的 agent，下一轮要派到 A | ✅ 已验证 | 同上：跨机器回传的文字里 @ 仍然被认出来，A 被派发 1 次、宿主的模型调用 0 次 |
 | 第三方离开：只撤它的人和 agent，另外两台照旧（包括 A 的镜像里 B 消失而自己不丢） | ✅ 已验证 | 同上 |
+| **同一台机器带两个 agent**：各有各的原生会话，提示里的身份与职责不串，下一轮回到同一个会话 | ✅ 已验证 | `test/lan-sessions.test.mjs`：一台加入方带「阿甲」「阿乙」进屋，一句话 @ 到两个 → 两轮分别落在不同的 `sessionId`、提示里「以谁的身份」「你的职责」各自对得上；再 `@阿甲` 补一句，仍是阿甲那个会话、也没把阿乙拉进来跑。反证做过：把加入方的会话强制成同一个，用例当场报「不能共用一个会话」 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 2 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true。`/lan/ping` 一并带出 `version` / `loadedAt` / `newestMtime` / `stale` |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
@@ -273,7 +274,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 代码指纹 + 协议面 + 客户端装载 + 包清单（52 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + LAN 抗坏包 + 代码指纹 + 协议面 + 客户端装载 + 包清单（53 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
