@@ -226,6 +226,16 @@ node tools/lan-check.mjs host --port 4399
 node tools/lan-check.mjs guest --host 10.0.51.18:4399 --code K7M2QD
 ```
 
+宿主那台打印的地址和邀请条是同一套口径：**第一个**才是对方连得上的那个，其余列在下面并标
+「虚拟网卡」（WSL / Hyper-V / Docker 的地址只有本机自己通）；整台机器只剩虚拟网卡时会直接
+提示先连 WiFi 或网线。
+
+加入方那台会验两段路，两段都过才算出结果：
+
+1. 我发一句 @ 对面那台机器的 agent → 它回一句（我这台 → 房间码 → 对面会话）；
+2. 我 @ 我自己带过去的 agent → 宿主把这一轮**派回我这台**，由它的原生会话跑完再回传
+   （少这一段，「人带着自己的 agent 进屋」只是半条路）。
+
 Windows 上连不上，先看入站防火墙（只开这一个端口，管理员 PowerShell）：
 
 ```powershell
@@ -299,7 +309,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **主持人跨机器**：主席是 B 那台机器的 agent，它回复里 @ 了 A 那台机器的 agent，下一轮要派到 A | ✅ 已验证 | 同上：跨机器回传的文字里 @ 仍然被认出来，A 被派发 1 次、宿主的模型调用 0 次 |
 | 第三方离开：只撤它的人和 agent，另外两台照旧（包括 A 的镜像里 B 消失而自己不丢） | ✅ 已验证 | 同上 |
 | **同一台机器带两个 agent**：各有各的原生会话，提示里的身份与职责不串，下一轮回到同一个会话 | ✅ 已验证 | `test/lan-sessions.test.mjs`：一台加入方带「阿甲」「阿乙」进屋，一句话 @ 到两个 → 两轮分别落在不同的 `sessionId`、提示里「以谁的身份」「你的职责」各自对得上；再 `@阿甲` 补一句，仍是阿甲那个会话、也没把阿乙拉进来跑。反证做过：把加入方的会话强制成同一个，用例当场报「不能共用一个会话」 |
-| 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
+| **跨机器联通自检（两段：我 → 对面那台的 agent；宿主 → 派回我这台的 agent）** | ✅ 已验证 | `node tools/lan-check.mjs`：Windows 宿主 `10.0.51.18:4400` + WSL2 Ubuntu 22.04 加入方（node v22.22.2，另一个内核、另一套网络栈）真 TCP 跑通两段 —— 第一段对面的 agent 回话；第二段宿主把「轮到我 agent」的那一轮派回 Ubuntu、用它自己的原生会话跑完再回传，回传文字逐字对上 `reply`。宿主打印的地址是排序后的第一个（`10.0.51.18`），虚拟网卡单列并标「虚拟网卡」 |
 | **邀请条上那个地址能不能真连上**（装了 WSL / Hyper-V 的机器有好几个 IPv4，虚拟网卡不能排前面） | ✅ 已验证 | `test/lan-addresses.test.mjs` 3 用例：把 `vEthernet (WSL (Hyper-V firewall))` 摆在网表最前，排出来的第一个仍是 `192.168.x` / `10.x`，虚拟网卡带 `virtual` 标记排在后面、同一份网表反复排顺序不变；APIPA（`169.254.x`）、`0.0.0.0`、回环都不算候选。反证做过：把排序关掉，第一条当场红。界面上那行「其他地址 … 虚拟网卡」见 `docs/invite.png` |
 | **加入之后才建的 agent 也能进屋**（空手进来的机器补建一个 → 宿主成员列立刻有它、标 LAN 且认得出哪台机器；改名跟着改、删掉跟着撤） | ✅ 已验证（真 HTTP） | `test/lan-agents.test.mjs` 6 用例：空手加入时屋里只有两个人 → `bot.create` 之后宿主多出 `origin.machine = GUEST-B` 的成员（加入方视角里它是本机）；`bot.update` 后宿主成员改名而历史消息仍署当时的名字；`bot.remove` 后成员被撤且本机 agent 不受影响。反证做过：把加入方的上报关掉，4 条全红（补建/改名/删掉/派发四条） |
 | 补报进来的 agent **真能被派发**（宿主 @ 它 → 派回那台机器 → 用它自己的会话跑 → 以 LAN 归属落库） | ✅ 已验证 | 同上第 4 条：宿主模型调用 0 次、加入方驱动 1 次且 `sessionId` 就是那个 agent 的、提示里有「以「阿乙」的身份」 |
@@ -321,7 +331,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **别人装得上**（`npm pack` 出来的那份能不能被 import） | ✅ 已验证 | `ea3b366` / `4a43dd8` 上 `npm pack` 31 个文件（无 `test` / `tools` / `node_modules` 泄漏），把 tarball 装进空目录后 `import('dsh-chatroom')` 拿得到 `name` / `inject` / `apply`，`icon.svg`、`locale/*.json`、`cordis.patch.yml`、`lib/client.js` 都在，客户端里没有一行 `@deepseek-ai/*` |
 | **CI 绿**（ubuntu + node 22/24 跑 `npm install` + `npm test`） | ✅ 已验证 | GitHub Actions `test` 两个 job 各 11–12s 通过（run `44050852162`）；同一套用例先在 WSL2 Ubuntu 22.04 / node v22.22.2 上真跑过一遍全绿才让 CI 去跑 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
-| 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：在上面跑一次 `tools/lan-check.mjs guest --host <本机 LAN IP>:4399 --code <房间码>` |
+| 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：这一台跑 `node tools/lan-check.mjs host`，真机器上照抄它打印的 guest 命令；两段都过即验收（第二段连「派回我这台跑我自己的 agent」一起验） |
 
 ## 边界（这一版明确不做）
 
