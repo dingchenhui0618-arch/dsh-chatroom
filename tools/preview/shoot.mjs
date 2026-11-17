@@ -146,6 +146,15 @@ const shots = [
     verify: 'no-reply',
     caption: '说了一句、谁都没接的时候：界面直接说是「没叫到人」，而不是让人对着一片安静以为插件坏了',
   },
+  {
+    name: 'history',
+    view: 'panel',
+    setup: '/preview/history',
+    waitFor: '.cr-older-btn',
+    before: 'history-top',
+    verify: 'history',
+    caption: '说满 200 句之后：更早的话还能一句一句翻回来，而不是只剩一句「只显示最近 200 条」',
+  },
 ]
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -243,16 +252,34 @@ async function boundsOf(cdp, sessionId, selector) {
 /**
  * 真的让插件去连一个连不上的地址：「刚占过又放掉」的那个端口号，确定没人监听。
  * 走的是宿主那台真实的 `lan.join`，所以界面上那句报错是真的，不是摆拍出来的。
+ *
+ * 端口要可复现：取一个固定的候选号（这一屏的文案里就带着这个号，随机会让每次
+ * 重跑都得到一张像素不同的图，「只改了别处」也会显得 join-error 全红）。
+ * 候选号都被占了才退回系统挑的空闲端口。
  */
+const CANDIDATE_PORTS = [4599, 4598, 4597, 4596]
 let joinFailRooms = 0
 let joinFailTarget = ''
 
-async function attemptFailingJoin(cdp, sessionId) {
+async function closedPort() {
+  for (const port of CANDIDATE_PORTS) {
+    const probe = createServer()
+    const free = await new Promise((resolve) => {
+      probe.once('error', () => resolve(false))
+      probe.listen(port, '127.0.0.1', () => resolve(true))
+    })
+    await new Promise((resolve) => probe.close(resolve))
+    if (free) return port
+  }
   const probe = createServer()
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
-  const closedPort = probe.address().port
+  const port = probe.address().port
   await new Promise((resolve) => probe.close(resolve))
-  joinFailTarget = `127.0.0.1:${closedPort}`
+  return port
+}
+
+async function attemptFailingJoin(cdp, sessionId) {
+  joinFailTarget = `127.0.0.1:${await closedPort()}`
   joinFailRooms = await evaluate(cdp, sessionId, `document.querySelectorAll('.cr-room').length`)
   const opened = await evaluate(
     cdp,
@@ -402,6 +429,21 @@ try {
     // 有的状态是「用户操作之后才出现」的（例如加入失败），得在拍照之前把它做出来，
     // 否则截图拍的是操作前那张，断言却在操作后跑 —— 图和结论对不上。
     if (shot.before === 'join-fail') await attemptFailingJoin(cdp, sessionId)
+    // 翻页入口在列表顶端：先把消息区滚到最上面，截到的才是「列表的起点」。
+    if (shot.before === 'history-top') {
+      const atTop = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const flow = document.querySelector('.cr-flow')
+          if (!flow) return false
+          flow.scrollTop = 0
+          return true
+        })()`,
+      )
+      if (!atTop) throw new Error('找不到消息区，滚不到顶部')
+      await sleep(200)
+    }
     // 截图要截「稳定下来的界面」，不是「刚好路过的中间态」：三台机器那张图里，
     // 远程 agent 的回复会在页面加载之后才落库，未读徽标会在面板可见的情况下
     // 自动清零 —— 等它清完再拍，否则同一份代码两次会拍出带徽标和不带徽标两张。
@@ -1190,6 +1232,50 @@ try {
       if (after.rows <= said.rows) throw new Error(`点名之后 agent 没有接话：${JSON.stringify(after)}`)
       if (after.hint !== 0) throw new Error('agent 接话之后那句解释还挂着')
       console.log('verified — 点名之后 agent 真接上了，那句解释自己消失')
+    }
+
+    // 长房间往回翻：投影只有最近 200 条，更早那 40 句必须真的能翻回来。
+    // 这一屏的判据不是「有个按钮」：点下去要真的多出 40 条、第一条变最早那句、
+    // 翻到底之后入口自己消失，而且视口没被跳走（用户还在原来那句上）。
+    if (wants(shot, 'history')) {
+      const readTimeline = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const flow = document.querySelector('.cr-flow')
+            const button = document.querySelector('.cr-older-btn')
+            const rows = [...document.querySelectorAll('.cr-msg')]
+            return {
+              rows: rows.length,
+              button: button ? String(button.textContent).trim() : null,
+              first: rows.length ? String(rows[0].querySelector('.cr-msg-text').textContent).trim() : '',
+              last: rows.length ? String(rows[rows.length - 1].querySelector('.cr-msg-text').textContent).trim() : '',
+              scrollTop: flow ? Math.round(flow.scrollTop) : null,
+              error: document.querySelector('.cr-error-bar') ? String(document.querySelector('.cr-error-bar').textContent).trim() : null,
+            }
+          })()`,
+        )
+      const before = await readTimeline()
+      if (!before.button) throw new Error('长房间没有「加载更早的消息」入口：说过的话翻不回去')
+      if (!/加载更早/.test(before.button)) throw new Error(`入口文案不对：${before.button}`)
+      if (before.rows !== 200) throw new Error(`投影应该是最近 200 条，实际 ${before.rows}`)
+      console.log(`verified — 240 句的屋子只显示最后一屏，顶端有入口：${before.button}`)
+
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-older-btn').click()`)
+      let after = null
+      for (let i = 0; i < 60; i += 1) {
+        after = await readTimeline()
+        if (after.rows > before.rows) break
+        await sleep(100)
+      }
+      if (after.error) throw new Error(`翻历史时报错了：${after.error}`)
+      if (after.rows !== 240) throw new Error(`翻完应该是 240 条，实际 ${after.rows}`)
+      if (after.button) throw new Error('已经翻到最早一条，入口还挂着')
+      if (!/11\/01/.test(after.first)) throw new Error(`翻到的不是最早那句：${after.first}`)
+      if (!/11\/24/.test(after.last)) throw new Error(`最新那句不该被翻页换掉：${after.last}`)
+      if (!(after.scrollTop > 0)) throw new Error('翻完视口被跳回顶部：用户读的那句会掉下去')
+      console.log(`verified — 点一下真翻回最早那 40 句（${after.rows} 条，首句「${after.first}」），入口自己消失`)
     }
     await cdp.send('Target.closeTarget', { targetId })
   }

@@ -13,6 +13,34 @@ import { unreadOf } from './rooms.js'
  */
 
 export const PROJECTION_MESSAGES = 200
+/** 往回翻一页的默认条数与上限。上限就是投影窗口：一页从不超过屏幕上能显示的那一整屏。 */
+export const PAGE_DEFAULT = 100
+export const PAGE_MAX = 200
+
+/**
+ * 往回翻一页历史。
+ *
+ * 投影只带最近 200 条，房间能存 4000 条。没有这一步，说满 200 句之后那些话在界面上
+ * 就等于不存在了 —— 界面上只留一句「只显示最近 200 条」，用户既翻不回去，
+ * 也不知道到底还留着多少。这里只读、不改状态：给的是「严格早于 beforeSeq 的最后 limit 条」，
+ * 外加「还有没有更早的」。
+ */
+export function pageMessages(room, { beforeSeq, limit } = {}) {
+  const rows = room.messages
+  const requested = Number(beforeSeq)
+  // 不给 beforeSeq 就当作「从最新一条往前翻」：这样调用方少一个必须传的参数。
+  const before = Number.isFinite(requested) ? requested : rows.length ? rows[rows.length - 1].seq + 1 : 1
+  const size = Math.max(1, Math.min(PAGE_MAX, Math.trunc(Number(limit)) || PAGE_DEFAULT))
+  const older = rows.filter((row) => row.seq < before)
+  const page = older.slice(-size)
+  return {
+    messages: page,
+    hasMore: older.length > page.length,
+    firstSeq: page.length ? page[0].seq : null,
+    // 这间屋子现在存着多少条：界面据此能说清「翻到的位置」而不只是「还有」。
+    total: rows.length,
+  }
+}
 
 export function project(state, extra = {}) {
   const viewerId = extra.viewerId ?? state.self.id
@@ -59,7 +87,9 @@ export function project(state, extra = {}) {
       unread: room.remote && typeof room.unread === 'number' ? room.unread : unreadOf(room, viewerId),
       members: room.members,
       messages: room.messages.slice(-PROJECTION_MESSAGES),
-      truncated: room.messages.length > PROJECTION_MESSAGES,
+      // 镜像房间的「还有更早的」由宿主说了算：本机只存着它发来的那 200 条，
+      // 按本地条数重算永远是 false —— 加入方就会永远翻不回更早的历史。
+      truncated: room.remote ? room.truncated === true : room.messages.length > PROJECTION_MESSAGES,
     })),
   }
 }

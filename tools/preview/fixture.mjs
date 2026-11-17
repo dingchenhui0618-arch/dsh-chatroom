@@ -296,6 +296,43 @@ export async function bootFixture({ port } = {}) {
       return side.snapshot()
     },
     /**
+     * 截「往回翻历史」用：投影只有最近 200 条，房间能存 4000 条 ——
+     * 说满 200 句之后那些话必须还能翻回去，不能只剩一句「只显示最近 200 条」。
+     * 单独开一间屋子，别把主线那几张图里的对话冲掉。
+     */
+    async history() {
+      const stale = side.snapshot().rooms.find((row) => row.name === '尾款对账')
+      if (stale) await side.command({ action: 'room.dissolve', input: { roomId: stale.id } })
+      const created = await side.command({
+        action: 'room.create',
+        input: { name: '季度对账存档', topic: '三个月的对账记录：往前翻得回去' },
+      })
+      const target = created.rooms.find((row) => row.name === '季度对账存档')
+      if (!target) throw new Error('没能开出「季度对账存档」这间屋子')
+      await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_cashflow' } })
+      await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_returns' } })
+      // 直接落库：这一屏演的是「这三个月的 240 句还在」，不是「现场再聊 240 句」。
+      side.store.commit((draft) => {
+        const room = draft.rooms.find((row) => row.id === target.id)
+        if (!room) throw new Error('落库时那间屋子不见了')
+        room.code = 'H8M3QD'
+        for (let i = 1; i <= 240; i += 1) {
+          const day = String(1 + Math.floor((i - 1) / 10)).padStart(2, '0')
+          const author = i % 3 === 0 ? 'm_bot_returns' : i % 3 === 1 ? draft.self.id : 'm_bot_cashflow'
+          const text =
+            i % 3 === 0
+              ? `11/${day} 这批退货 3 件，占当日出库 1.2%。`
+              : i % 3 === 1
+                ? `11/${day} 对账：应付款核过一遍，差 0.4 万是运费尾差。`
+                : `11/${day} 缺口按 45 天账期重算，比上周低 6 万。`
+          postMessage(draft, { roomId: room.id, authorId: author, text })
+        }
+        markRead(draft, { roomId: room.id, memberId: draft.self.id, seq: room.nextSeq - 1 })
+      })
+      pinTimes(side.store)
+      return side.snapshot()
+    },
+    /**
      * 截「agent 怎么进来」用：第二台机器先空手加入，再在界面里建一个 agent。
      *
      * 只认加入那一刻的名单时这条路是断的：屋里永远只有他一个人，对面的成员列

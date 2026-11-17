@@ -59,6 +59,8 @@ export function createLanBridge({ store, runner, log = () => {}, machine = hostn
     leave: (linkId) => guest.leave(linkId),
     send: (args) => guest.send(args),
     read: (args) => guest.read(args),
+    // 往回翻历史：镜像房间更早的消息在宿主那台机器上，只能连着 LAN 要。
+    page: (args) => guest.page(args),
     rename: (name) => guest.rename(name),
     // 「加入之后才建 agent」这条路：本机名单变了就报给宿主，让屋里立刻有人。
     announceAgents: () => guest.announceAgents(),

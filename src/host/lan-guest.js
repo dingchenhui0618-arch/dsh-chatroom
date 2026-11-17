@@ -431,6 +431,30 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     })
   }
 
+  /**
+   * 往回翻历史：本机只镜像了宿主最近 200 条，更早的在宿主那台机器上。
+   *
+   * 请求里只带 beforeSeq / limit —— 房间由这张 link 决定（宿主按 peerId 认房间），
+   * 所以就算有人把 roomId 改掉，也只能翻到自己已经加入的那间屋子。
+   */
+  async function page({ roomId, beforeSeq, limit }) {
+    const record = linkByRoom(roomId)
+    if (!record) fail('remote_room_unknown', '这间屋子不是从别的机器同步来的。')
+    return withPeer(record, async (peer) => {
+      const value = await postJson(
+        `${baseUrl(peer.host, peer.port)}/lan/messages`,
+        { peerId: peer.peerId, beforeSeq, limit },
+        { timeoutMs: 8000 },
+      )
+      return {
+        messages: Array.isArray(value?.messages) ? value.messages : [],
+        hasMore: Boolean(value?.hasMore),
+        firstSeq: value?.firstSeq ?? null,
+        total: typeof value?.total === 'number' ? value.total : null,
+      }
+    })
+  }
+
   async function rename(name) {
     const label = String(name ?? '').trim().slice(0, 60)
     if (!label) return null
@@ -530,5 +554,5 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     }
   }
 
-  return { join, leave, send, read, rename, resume, stop, snapshotView, linkByRoom, links, announceAgents }
+  return { join, leave, send, read, page, rename, resume, stop, snapshotView, linkByRoom, links, announceAgents }
 }

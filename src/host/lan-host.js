@@ -12,7 +12,7 @@ import {
   removePeer,
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
-import { project } from './project.js'
+import { pageMessages, project } from './project.js'
 import { code, codeStatus } from './code.js'
 
 /**
@@ -622,6 +622,18 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           text: input.text,
           error: input.error,
         })
+      } else if (path === '/lan/messages' && request.method === 'POST') {
+        /**
+         * 加入方往回翻历史。
+         *
+         * 房间只从凭据里认（peer.roomId），不看请求里说的 roomId —— 一张 peerId
+         * 只能翻到自己已经加入的那间屋子，不能借一条合法凭据去读别人的历史。
+         */
+        const input = await readJson(request)
+        const peer = requirePeer(input.peerId)
+        const room = getRoom(store.state, peer.roomId)
+        if (!room) fail('room_not_found', '这间屋子已经不在了。')
+        value = pageMessages(room, { beforeSeq: input.beforeSeq, limit: input.limit })
       } else if (path === '/lan/read' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)

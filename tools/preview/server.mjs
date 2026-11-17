@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootFixture, bootGuest, joinThirdMachine, warmUp } from './fixture.mjs'
+// 往回翻历史这一屏走的是宿主同一个分页函数：预览里的翻页不是给界面塞假数据，
+// 而是真的从房间记录里切出更早那一页。
+import { pageMessages } from '../../src/host/project.js'
 
 /**
  * 截图用的最小服务器：静态文件 + 三个和线上同形的端点。
@@ -89,6 +92,11 @@ function serve(side, port, { nudge = null } = {}) {
           const payload = body.payload ?? {}
           if (endpoint === 'snapshot') {
             result = { ok: true, value: side.snapshot() }
+          } else if (endpoint === 'messages') {
+            // 预览这一半没有局域网（这一屏演的是宿主自己往回翻），镜像房间走不到这里。
+            const room = side.store.state.rooms.find((row) => row.id === String(payload.roomId ?? ''))
+            if (!room) throw Object.assign(new Error('找不到这间屋子。'), { code: 'room_not_found' })
+            result = { ok: true, value: pageMessages(room, payload) }
           } else if (endpoint === 'command') {
             result = { ok: true, value: await side.command(payload) }
           } else if (endpoint === 'watch') {
@@ -131,6 +139,15 @@ function serve(side, port, { nudge = null } = {}) {
       if (url.pathname === '/preview/no-reply') {
         usage.writes += 1
         await host.noReply()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+
+      // 截图用：「往回翻历史」那一屏 —— 一间说满 240 句的屋子，投影只给最近 200 条。
+      if (url.pathname === '/preview/history') {
+        usage.writes += 1
+        await host.history()
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
         return

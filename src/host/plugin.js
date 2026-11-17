@@ -17,7 +17,7 @@ import { createBotRunner } from './turn.js'
 import { createSpeaker } from './speak.js'
 import { createLanBridge } from './lan-bridge.js'
 import { markApplied } from './code.js'
-import { project } from './project.js'
+import { pageMessages, project } from './project.js'
 
 export { project } from './project.js'
 
@@ -52,6 +52,21 @@ function assertLocal(room, action) {
   throw Object.assign(new Error(`这间屋子在 ${room.remote.machine || room.remote.host} 上，${action}要在那台机器上做。`), {
     code: 'remote_room',
   })
+}
+
+/**
+ * 界面往回翻历史。
+ *
+ * 本机房间直接读自己的库；镜像房间（加入方的屋子）本机只存着宿主发过来的那 200 条，
+ * 再往前的东西只有宿主有，所以要连着 LAN 问它要 —— 但**用这条链接自己的凭据**，
+ * 而且宿主那边只认 peer 绑定的那个房间，请求里说的 roomId 只能用来做本地定位。
+ */
+async function messagesPage({ store, lan, payload }) {
+  const room = store.state.rooms.find((row) => row.id === String(payload?.roomId ?? ''))
+  if (!room) throw Object.assign(new Error('找不到这间屋子。'), { code: 'room_not_found' })
+  if (!room.remote) return pageMessages(room, payload)
+  if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+  return lan.page({ roomId: room.id, beforeSeq: payload?.beforeSeq, limit: payload?.limit })
 }
 
 export async function dispatch({ store, speaker, lan = null, command }) {
@@ -411,6 +426,8 @@ export function apply(ctx) {
         const payload = message.payload ?? {}
         if (endpoint === 'snapshot') {
           result = { ok: true, value: lan.view() }
+        } else if (endpoint === 'messages') {
+          result = { ok: true, value: await messagesPage({ store, lan, payload }) }
         } else if (endpoint === 'command') {
           result = { ok: true, value: await dispatch({ store, speaker, lan, command: payload }) }
         } else if (endpoint === 'watch') {
@@ -427,7 +444,7 @@ export function apply(ctx) {
     }
 
     try {
-      for (const endpoint of ['snapshot', 'command', 'watch']) {
+      for (const endpoint of ['snapshot', 'command', 'messages', 'watch']) {
         const connection = serviceFor('connection')
         disposers.push(
           connection.fetch.register({

@@ -138,12 +138,12 @@ async function call(routes, endpoint, payload) {
 
 const tick = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms))
 
-test('三个端点都注册，快照是空房间列表', async () => {
+test('四个端点都注册，快照是空房间列表', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
   const { ctx, routes } = fakeCtx(dir)
   const dispose = await apply(ctx)
   try {
-    for (const endpoint of ['snapshot', 'command', 'watch']) {
+    for (const endpoint of ['snapshot', 'command', 'messages', 'watch']) {
       assert.ok(routes.has(`/api/dsh.chatroom/${endpoint}`), `缺少 ${endpoint}`)
     }
     const snapshot = await call(routes, 'snapshot', {})
