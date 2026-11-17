@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -130,6 +131,23 @@ test('client bundle：按加载协议装载，注册侧栏入口、主面板、�
   assert.ok(globalThis.document.appended.length >= 1, '应该注入一份样式')
   // 装载就会开始长轮询，测试结束必须把它停掉，否则 node --test 等不到事件循环空下来。
   for (const dispose of disposers) dispose()
+})
+
+test('回车提交先问过输入法：拼字中的那一下回车不能把半截话发出去', async () => {
+  const source = await readFile(join(process.cwd(), 'lib', 'client.js'), 'utf8')
+  assert.match(source, /function imePicking\(event\)/, '要有一个统一的「这一下回车是在选词吗」判断')
+  // 每个接回车的处理器都得先过这一关。输入法开着时，选词那一下 keydown 带着
+  // isComposing 进来（老输入法只给 keyCode 229），认不出来就等于「拼音打一半就发出去」。
+  // 光测输入框不够：新建房间、加入、改名、建 agent 这些表单也都接回车。
+  const handlers = source.split(/onKeyDown:\s*\(event\)\s*=>\s*\{/).slice(1)
+  const enterHandlers = handlers.filter((block) => /['"]Enter['"]/.test(block.slice(0, 400)))
+  const withoutGuard = enterHandlers.filter((block) => !block.slice(0, 400).includes('imePicking(event)'))
+  assert.ok(enterHandlers.length >= 10, `接回车的处理器只找到 ${enterHandlers.length} 个，这条检查失去意义`)
+  assert.deepEqual(
+    withoutGuard.map((block) => block.split('\n')[0].trim()),
+    [],
+    '这些回车处理器没挡住输入法选词',
+  )
 })
 
 test('有连接服务时走 rpc.call：拿到快照后才开始长轮询，一次都不碰 fetch', async () => {

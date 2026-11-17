@@ -189,7 +189,7 @@ const shots = [
     setup: '/preview/history-live',
     waitFor: '.cr-older-btn',
     before: 'history-live-top',
-    verify: 'history-live',
+    verify: ['history-live', 'ime-enter'],
     caption: '翻着历史时屋里又进来话：出口上写清「几条新的」，人没被拽到底部，投影滑动留下的那道接缝也补上了',
   },
 ]
@@ -1928,6 +1928,147 @@ try {
       if (cleared.jump !== null) throw new Error('点过之后出口还挂着')
       if (!(cleared.gap <= 2)) throw new Error(`点了「回到最新」却没到底：还差 ${cleared.gap}px`)
       console.log(`verified — 点一下回到最新，计数自己消失（离底部 ${cleared.gap}px）`)
+    }
+    // 中文输入法里回车是「选词」，不是「发送」。
+    // 浏览器把拼字中的那一下标成 isComposing，老输入法只给 keyCode 229；
+    // 不认这个标记，拼音打到一半按回车就把半截话发进屋里 —— 面板和浮窗一样。
+    // 这条检查最后会真发一句出去（证明回车仍然能发），所以只能挂在最后一屏：
+    // 那时截图已经拍完，屋里多这一句不影响任何 PNG。
+    if (wants(shot, 'ime-enter')) {
+      if (shots.at(-1).name !== shot.name) {
+        throw new Error('ime-enter 会真发一句，只能挂在最后一屏；往后加屏时请把它一起搬过去')
+      }
+      const { targetId: imeTarget } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+      const { sessionId: imeSession } = await cdp.send('Target.attachToTarget', {
+        targetId: imeTarget,
+        flatten: true,
+      })
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+        imeSession,
+      )
+      await cdp.send('Page.enable', {}, imeSession)
+      await cdp.send('Runtime.enable', {}, imeSession)
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?view=session` }, imeSession)
+      await waitForSelector(cdp, imeSession, '.cr-float-pill')
+      await evaluate(cdp, imeSession, `document.querySelector('.cr-float-pill').click()`)
+      await waitForSelector(cdp, imeSession, '.cr-float-input')
+      // 浮窗只投影最近几句：条数不变不代表没发出去，所以问宿主要 nextSeq 当判据。
+      const floatSeq = () =>
+        evaluate(
+          cdp,
+          imeSession,
+          `(async () => {
+            const response = await fetch('/api/dsh.chatroom/snapshot', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ type: 'client-request', rpcId: 'ime', method: 'dsh.chatroom/snapshot', payload: {} }),
+            })
+            const body = await response.json()
+            const snapshot = body.result.value
+            const rooms = snapshot.rooms
+            const room = rooms.find((row) => row.id === snapshot.activeRoomId) || rooms[0]
+            const box = document.querySelector('.cr-float-input')
+            return {
+              nextSeq: room ? room.nextSeq : null,
+              room: room ? room.name : null,
+              draft: box ? box.value : null,
+            }
+          })()`,
+        )
+      const floatBefore = await floatSeq()
+      await evaluate(
+        cdp,
+        imeSession,
+        `(() => {
+          const box = document.querySelector('.cr-float-input')
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          box.focus()
+          setter.call(box, '浮窗里拼音还没选完')
+          box.dispatchEvent(new Event('input', { bubbles: true }))
+          box.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true,
+          }))
+          return true
+        })()`,
+      )
+      await sleep(400)
+      const floatAfter = await floatSeq()
+      if (floatAfter.nextSeq !== floatBefore.nextSeq) {
+        throw new Error(
+          `浮窗里拼字中的回车把话发出去了（${floatBefore.room}）：#${floatBefore.nextSeq} → #${floatAfter.nextSeq}`,
+        )
+      }
+      if (!/浮窗里拼音还没选完/.test(String(floatAfter.draft))) {
+        throw new Error(`浮窗里拼字中的回车把草稿吃掉了：${JSON.stringify(floatAfter.draft)}`)
+      }
+      await cdp.send('Target.closeTarget', { targetId: imeTarget })
+      console.log('verified — 浮窗输入框：拼字中的回车不发送，草稿留着')
+
+      const panelNow = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const box = document.querySelector('textarea.cr-textarea')
+            return {
+              rows: document.querySelectorAll('.cr-msg').length,
+              draft: box ? box.value : null,
+              error: document.querySelector('.cr-error-bar')
+                ? String(document.querySelector('.cr-error-bar').textContent).trim()
+                : null,
+            }
+          })()`,
+        )
+      const beforeIme = await panelNow()
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const box = document.querySelector('textarea.cr-textarea')
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          box.focus()
+          setter.call(box, '这句是拼音拼到一半')
+          box.dispatchEvent(new Event('input', { bubbles: true }))
+          box.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true,
+          }))
+          return true
+        })()`,
+      )
+      await sleep(450)
+      const afterIme = await panelNow()
+      if (afterIme.rows !== beforeIme.rows) {
+        throw new Error(`面板里拼字中的回车把话发出去了：${beforeIme.rows} → ${afterIme.rows} 条`)
+      }
+      if (afterIme.draft !== '这句是拼音拼到一半') {
+        throw new Error(`面板里拼字中的回车把草稿改了：${JSON.stringify(afterIme.draft)}`)
+      }
+      // 反证：选完词之后那一下回车必须照常发出去，别为了挡住拼字把发送也弄哑了。
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const box = document.querySelector('textarea.cr-textarea')
+          box.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+          }))
+          return true
+        })()`,
+      )
+      let sent = null
+      for (let i = 0; i < 40; i += 1) {
+        sent = await panelNow()
+        if (sent.rows > beforeIme.rows && sent.draft === '') break
+        await sleep(100)
+      }
+      if (!(sent.rows > beforeIme.rows)) throw new Error('选完词（真正的回车）反而发不出去了')
+      if (sent.draft !== '') throw new Error(`发送之后草稿没清空：${JSON.stringify(sent.draft)}`)
+      if (sent.error) throw new Error(`这一下回车把界面弄报错了：${sent.error}`)
+      console.log(
+        `verified — 面板与浮窗都认输入法：拼字中的回车不发送、草稿留着；选完词的回车照常发（${beforeIme.rows} → ${sent.rows} 条）`,
+      )
     }
     await cdp.send('Target.closeTarget', { targetId })
   }

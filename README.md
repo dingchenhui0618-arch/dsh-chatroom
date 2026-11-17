@@ -445,7 +445,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 4 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true；探针 `codeStatus()` **每次都重读磁盘**（拷一份到临时目录改 mtime，不重新装载也当场翻成过期，静态快照不动）；**热重载之后 `stale` 落回 false** —— 判据是 apply 推的 `appliedAt`，不是模块自己的求值时间（旧写法下这条红：只改别的模块再重载，`loadedAt` 不动，探针会一直喊过期）。`/lan/ping` 一并带出 `version` / `loadedAt` / `appliedAt` / `newestMtime` / `stale`，真实 HTTP 上验过 false→true→false |
 | **装了新版怎么让跑着的进程换代码**（不重启桌面端） | ✅ 已验证（真实 profile） | 在设置 → 插件里把 `dsh-chatroom` 关掉再打开：4399 立刻关闭 → 再打开后 `/lan/ping` 的 `appliedAt` 变成那一刻、`newestMtime` 是磁盘上最新的改动、`stale: false`；`shell.overlay` 里 `chatroom-float` 重新注册成 active。改一个文件再探翻成 `stale: true`，重新装载一次又回到 `false`。同一份 profile 上连开三轮：`loadedAt` 一直停在 `11:23:28.880Z`（没改过的模块不重新求值），`appliedAt` 依次 `11:23:29Z → 11:23:48Z → 11:24:02Z`；中间把 `lan-guest.js` 按原字节重写（只动 mtime）→ `stale: true`，再重载 → `false`。从 WSL2 走 `10.0.51.18:4399` 读到的是同一份 JSON。之后又改了一处宿主代码（端口被占时那句提示）、重载一次：`loadedAt` 仍是 `11:23:28.880Z`，`newestMtime` 前进到 `11:33:39.233Z`、比 `loadedAt` 新，`appliedAt` 是 `11:34:23.400Z`，`stale: false` —— 正是旧判据会喊假过期的那个组合 |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
-| Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
+| Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 4 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」；第 4 条守输入法（见下面那行） |
 | **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用到的 5 个宿主变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-layer-2`）在当前主题里都存在 |
 | **浮层底色在真实主题里也是对的**（不是取不到 token 时的回退色） | ✅ 已验证（真 `dsh web`） | 起一份真外壳量过：默认深色主题里 `--dsw-alias-bg-overlay` 是 **`#61666b`**（说明图/遮罩那档灰），套到浮窗上就是一块比宿主面板亮一截的灰板；宿主自己抬起来的那层是 `--dsw-alias-bg-layer-2` = `#2c2c2e`，换成它之后浮窗、胶囊、toast、气泡在真外壳里和宿主面板一致（截图重出，两轮独立重跑 17 张逐字节相同） |
 | **主按钮的字在真外壳里读得出来**（默认主题的品牌色是近白 `#f9fafb`，写死 `#fff` 就是白底白字） | ✅ 已验证（真 `dsh web`） | 另起一份真外壳（临时 `DSH_HOME` + `dsh plugin --profile web add D:/Projects/dsh-chatroom` + `dsh --profile web --port 3411`），无头 Chrome 走 CDP 点进「聊天室」：`getComputedStyle` 读到「新建房间」是 `color: rgb(21,21,23)` / `background: rgb(249,250,251)`，对比度 **17.45:1**；同一份真外壳里 0 间屋子时的首屏卡片（标题「房间在你自己的机器上」、说明、两个入口）也在，网格是 `224px 936px` 两列，按钮 28px 高。旧代码这一处是 `#fff` on `#f9fafb`（对比度 1:1，字等于没有），旧 `docs/panel.png` 里「发送」就是这个样子 |
@@ -453,6 +453,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **界面 / 宿主 / 加入方三方的协议面对得上**（这类错没有异常、没有日志，表现只是「点了没反应」） | ✅ 已验证 | `test/protocol.test.mjs` 3 用例：界面调的每个 action 宿主都有分支、界面用的每个 RPC 方法宿主都有端点、加入方敲的每个 `/lan/*` 路由宿主都在服务。把宿主的 `bot.update` 改名成 `bot.patch` 再跑，第一条当场报出来（不是空转） |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
 | **未读数字在徽标上读得出来**（默认主题的品牌色本身是近白 `#f9fafb`，徽标原来写死 `color:#fff` = 白字白底） | ✅ 已验证 | `verify: 'read'` 在真实渲染里逐个量徽标的前景/背景并算对比度：现在 **17.45:1**（深色数字 on 近白底），四枚徽标（侧栏那颗 + 面板 + 胶囊 + toast）一致；修复前同一处实测 `fg rgb(255,255,255)` on `bg rgb(249,250,251)` = **1.04:1**，实机上就是一坨白点、数字等于没有。侧栏那颗还在 token 作用域之外（宿主只把 `--dsw-alias-*` 挂在面板元素上），原来 `var(--cr-accent)` 取不到就是透明底，现在补了 accent / on-accent 的兜底链 |
+| **中文输入法里回车是「选词」，不是「发送」**（拼音打到一半那一下回车原来会把半截话发进房间，还留着一条拼音） | ✅ 已验证 | `verify: 'ime-enter'` 在真渲染的页面里灌一发带 `isComposing: true` 的回车：①浮窗输入框不发送 —— 宿主 `nextSeq` 停在 `#243`、草稿还在；②面板输入框不发送、草稿原样；③紧接着那一下普通回车照常发出去（`242 → 243` 条，草稿清空）—— 挡住拼字没把发送弄哑。修复前同一段检查红在「浮窗里拼字中的回车把话发出去了（季度对账存档…）：`#243 → #244`」。`test/client.bundle.test.mjs` 另有一条静态守卫：10 个接回车的处理器（两个输入框 + 新建房间 / 加入 / 改名 / 建 agent 五个表单）每个都得先 `imePicking(event)`；拿修复前那份 `lib/client.js` 跑这条会报 10 个缺守卫 |
 | 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内 / 收起成胶囊也拖得动） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 五条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900），而胶囊那条在旧代码上一步也拖不动（拖动监听跟着 `floatOpen` 一起关掉了） |
 | 真实渲染（刚装好 / 面板 / 邀请 / 加入失败 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 补建 agent / 版本不一致 / 重试 / 已解散 / 谁都没接 / 往回翻历史 / 翻着历史时来新消息） | ✅ 已验证 | `docs/empty.png`、`docs/panel.png`、`docs/invite.png`、`docs/join-error.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/bring-agent.png`、`docs/old-peer.png`、`docs/retry.png`、`docs/gone.png`、`docs/no-reply.png`、`docs/history.png`、`docs/history-live.png`；两轮独立重跑 17 张 0 像素差异 |
 | **一间屋子都没有时的第一屏**（新装的人看到的第一个界面） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'first-run'`（另起一台 `PREVIEW_EMPTY=1` 的预览服务，真状态机、只是没房间）：断言 0 间屋子、网格只剩 2 列（不占一根空成员列）、标题/说明/脚注都在且说明里讲清「六位房间码」与「agent」、脚注指向「规则」、没有没填上的占位；两个入口写着「新建房间｜加入 LAN 房间」、高度 ≥24px、不越视口、说明块 ≤460px 且不压到左栏、无横向溢出；然后**真的去点**这两个入口 —— 新建开出两个输入 + 「建好」表单，加入开出「地址 + 六位房间码 + 加入」表单，取消之后首屏还在。见 `docs/empty.png` |
@@ -492,7 +493,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包 + 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（83 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包 + 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（84 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
@@ -530,6 +531,10 @@ node tools/real-shell.mjs --url "<dsh web 启动时打印的地址>" --out docs/
 提醒那一屏顺带抓出一个真问题：截图里侧栏那颗徽标看着像一坨白点 —— 量了一下是白字白底
 （`#fff` on `#f9fafb`，1.04:1）。改成反色之后是 17.45:1，`verify: 'read'` 现在把对比度当断言，
 小于 4.5:1 直接红。
+
+输入法那一条检查（`verify: 'ime-enter'`）会**真发一句**出去证明「选完词的回车仍然能发」，
+所以它只能挂在最后一屏 —— 那时 `history-live.png` 已经拍完，屋里多这一句不影响任何 PNG。
+这一点写死在脚本里（不是最后一屏就直接报错），免得以后往后加屏时把这张图拍脏。
 
 **截图脚本会自己确认预览服务器是刚起来的**：服务器里那份状态机是活的（上一轮会往里补消息、
 解散房间），拿同一份用过的状态再截，图会偏、断言也可能假通过。所以它会先读
