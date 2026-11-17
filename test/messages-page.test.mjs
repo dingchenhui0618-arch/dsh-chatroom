@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { apply } from '../src/host/plugin.js'
 import { PAGE_DEFAULT, PAGE_MAX, pageMessages } from '../src/host/project.js'
-import { call, fakeCtx } from './helpers/fake-ctx.mjs'
+import { call, fakeCtx, until } from './helpers/fake-ctx.mjs'
 
 /**
  * 往回翻历史。
@@ -183,5 +183,81 @@ test('加入方也能往回翻：更早的消息去宿主那台机器要，且�
   } finally {
     await disposeHost()
     await disposeGuest()
+  }
+})
+
+test('加入方重启之后翻的还是同一间屋子的历史：作废的是凭据，不是墙', async () => {
+  const hostDir = await mkdtemp(join(tmpdir(), 'chatroom-page-rejoin-host-'))
+  const guestDir = await mkdtemp(join(tmpdir(), 'chatroom-page-rejoin-guest-'))
+  const host = fakeCtx(hostDir, { reply: '宿主这边收到。' })
+  const guest = fakeCtx(guestDir, { reply: '远程这边：退货率 7.1%。' })
+  const disposeHost = await apply(host.ctx)
+  let disposeGuest = await apply(guest.ctx)
+  try {
+    const created = await call(host.routes, 'command', { action: 'room.create', input: { name: '长历史' } })
+    const hostRoom = created.value.rooms[0]
+    for (let i = 1; i <= 240; i += 1) {
+      await call(host.routes, 'command', { action: 'msg.send', input: { roomId: hostRoom.id, text: `第 ${i} 句` } })
+    }
+    const port = (await call(host.routes, 'snapshot', {})).value.lan.port
+    assert.ok(port, '宿主应该已经在监听')
+
+    const joined = await call(guest.routes, 'command', {
+      action: 'lan.join',
+      input: { host: '127.0.0.1', port, code: hostRoom.code },
+    })
+    assert.equal(joined.ok, true)
+    const mirror = joined.value.rooms.find((room) => room.remote)
+    assert.ok(mirror, '加入后应该有一间镜像房间')
+    const mirrorId = mirror.id
+    const before = await call(guest.routes, 'messages', { roomId: mirrorId, beforeSeq: mirror.messages[0].seq })
+    assert.equal(before.ok, true)
+    assert.equal(before.value.messages[0].seq, 1, '重启之前本来就能翻到最早那句')
+
+    const oldPeerId = (await call(host.routes, 'snapshot', {})).value.lan.peers[0].id
+
+    // 桌面端重启：不 leave，关掉这一代，用同一份 profile 再起一次。
+    // link 是落盘的，所以它自己会重新握手 —— 重启后翻历史不能因此断掉。
+    await disposeGuest()
+    disposeGuest = null
+    const again = fakeCtx(guestDir, { reply: '重启之后还是我。' })
+    disposeGuest = await apply(again.ctx)
+
+    // 认新凭据而不是「屋里只有一份」：重新握手前本来就只有旧那组一份。
+    await until(async () => {
+      const view = await call(host.routes, 'snapshot', {})
+      return view.value.lan.peers.length === 1 && view.value.lan.peers[0].id !== oldPeerId
+    }, { timeoutMs: 6000, label: '加入方重新握手' })
+
+    const mirrorAfter = await until(async () => {
+      const view = await call(again.routes, 'snapshot', {})
+      const room = view.value.rooms.find((row) => row.remote)
+      return room && room.messages.length === 200 ? room : null
+    }, { label: '重启后镜像仍是最近 200 条' })
+    assert.equal(mirrorAfter.id, mirrorId, '重启换的是凭据，屋子还是那一间')
+    assert.equal(mirrorAfter.truncated, true, '重启之后仍然知道自己缺更早的那些')
+
+    const after = await call(again.routes, 'messages', {
+      roomId: mirrorId,
+      beforeSeq: mirrorAfter.messages[0].seq,
+    })
+    assert.equal(after.ok, true, `重启后翻页应该照常：${JSON.stringify(after.error)}`)
+    assert.equal(after.value.messages.length, 40)
+    assert.equal(after.value.messages[0].seq, 1)
+    assert.equal(after.value.messages[0].text, '第 1 句')
+    assert.equal(after.value.total, 240)
+
+    // 上一代凭据随进程作废：拿旧 peerId 直接打 LAN，一条历史都不给。
+    const response = await fetch(`http://127.0.0.1:${port}/lan/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ peerId: oldPeerId, beforeSeq: 41, limit: 100 }),
+    })
+    const body = await response.json()
+    assert.equal(body.ok, false)
+    assert.equal(body.error.code, 'peer_unknown')
+  } finally {
+    await disposeHost()
+    if (disposeGuest) await disposeGuest()
   }
 })
