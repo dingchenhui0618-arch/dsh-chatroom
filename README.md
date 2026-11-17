@@ -206,7 +206,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 第三方离开：只撤它的人和 agent，另外两台照旧（包括 A 的镜像里 B 消失而自己不丢） | ✅ 已验证 | 同上 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
-| Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
+| Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
+| **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
 | 悬浮窗拖不丢（记住的位置用得上 / 越界坐标夹回 / 拖动中不出界 / 窗口变窄仍在视口内） | ✅ 已验证 | 同上，`verify: 'float-bounds'` 四条断言；拿旧客户端跑同一组断言会失败在“拖到屏幕外”（`left 9982, top 9990`，视口 1440×900） |
@@ -235,7 +236,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 客户端装载 + 包清单（45 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 客户端装载 + 包清单（47 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
@@ -244,9 +245,9 @@ node tools/lan-check.mjs host|guest   # 两台机器之间的联通自检
 
 截图里的消息时间、房间码、宿主 LAN 端口都钉死了（`tools/preview/fixture.mjs`），
 所以重复跑出来的图只差抗锯齿噪点 —— `docs/` 的 diff 才看得懂谁真的改了界面。
-三次独立重跑实测（九张图）：八张逐字节相同，或只差替身外壳左上角 27–35 个像素
-（峰值 ≤10/255）；规则那张差 26 个像素、峰值 6/255，也在同一块。这点残差肉眼看不出来，
-所以改完宿主逻辑重跑一遍、图只差这些像素时，就不该把 `docs/` 的图重新提交一遍。
+四次独立重跑实测（九张图）：八张逐字节相同，或只差替身外壳左上角 26–35 个像素
+（峰值 ≤20/255，肉眼看不出来）；所以改完逻辑重跑一遍、图只差这些像素时，
+就不该把 `docs/` 的图重新提交一遍。
 带未读的三张（加入方、三台机器同屋、提醒）都会先等未读清零再截：远程 agent 的回复是页面加载
 之后才落库的，不等待就会一次拍到带徽标、一次不带 —— 那种「每次都不一样」的图不该进 docs/。
 

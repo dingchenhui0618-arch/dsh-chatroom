@@ -32,6 +32,18 @@ ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-client-connection'
 - 信封：`{type:'client-request', rpcId:string, method:string, payload:unknown}` → 回 `{type:'server-response', rpcId, result}`。
 - 用户消息：`{id, role:'user', content:[{type:'text',text}], source}` —— 与 `createUserMessage` 等价。
 
+**客户端怎么把信封递给宿主**：优先走客户端连接服务
+`ctx.connection.rpc.call('/api', 'dsh.chatroom/<端点>', payload, signal)`。但连接服务在不同版本上
+挂的位置不一样（`ctx.connection` 属性 / `ctx.get('connection')`），也不保证每个组合里都取得到，
+所以取不到时回落到**同源 POST `/api/dsh.chatroom/<端点>`**，把同一个信封递过去：浏览器自带
+Cookie 鉴权，宿主侧看到的东西一模一样。同宿主里别的客户端插件走的就是这条路
+（dsh-doudizhu 直接 `fetch('/api/dsh-doudizhu/state')`）。少一个服务不该让整个面板停摆。
+
+插槽这半边同样要在真机上核对：Client Inspect 直接查运行中的页面，四个 slot 里都能看到
+`dsh-chatroom` 的登记（id / order / `active: true`），用的 5 个主题变量在当前主题里都存在。
+但「注册上了」和「用户看到什么样」是两件事 —— 前者用 Inspect 证明，后者只有 `docs/` 里的
+真实渲染截图能证明。
+
 ## 3. 数据模型
 
 状态是一份整体快照，落在 `<profile>/dsh-chatroom/state.json`（写 tmp 再 rename）。
@@ -218,7 +230,7 @@ DSH 自己的端口是 loopback + cookie + 每进程随机 token，**不能**拿
 | LAN（宿主 + 加入者） | 两个独立实例各起 `node:http`，互相走真实 `/lan/*`（9 用例） | 跨机器这条路没法用单测假装：真 HTTP、真鉴权、真派发、真超时；其中一条专测「进屋之后再改名」——改的必须是同一条成员记录，不能凭空多出一个人 |
 | LAN 请求面抗坏包 | 直接往 socket 灌字节：畸形 `Host`、非法请求行、超大 `Content-Length`、非 JSON、未知路径（3 用例） | 这个口对同网段开着，而漏出去的异常会把宿主进程带走 —— 这类缺陷只有「真发包 + 断言进程还活着」才测得出来 |
 | 三台机器同屋 | 三个独立实例：宿主 + 两台加入方，各自带 agent（4 用例） | 两方时归属不可能搞错，三方才会暴露「A 的话在 B 那边被标成本机」这类串台；顺便验一轮里预算正好用满、只派给该派的那台，以及主席在远程时它 @ 到的第三台机器能接上 |
-| `lib/client.js` | 在 Node 里按真实加载协议装载 + 假 React 桩 | 客户端装错的后果是整页白屏，必须能离线拦住 |
+| `lib/client.js` | 在 Node 里按真实加载协议装载 + 假 React 桩（3 用例） | 客户端装错的后果是整页白屏，必须能离线拦住；其中两条专测客户端到宿主的两条运输路：有连接服务时走 `rpc.call` 且一次不碰 `fetch`，取不到连接服务时回落到同源 `/api`，断言信封一致、并且拿到快照之后才进入长轮询（只发请求不算通，接上了才算） |
 | 悬浮窗位置 | 真实渲染里存一个越界坐标重开页面、拖到 9999×9999、再把窗口改到 1024×700，三处都断言浮窗仍在视口内 | 坐标是能记住的东西，但「记住」和「点得到」是两件事：窗口一变，旧坐标就变成一块抓不住的浮窗 |
 | `package.json` / `icon.svg` / `locale` | 清单自洽（4 用例）：图标能渲染、中英描述齐全、`files` 与 `exports` 对得上、`lib` 与 `src` 里零 `@deepseek-ai/*` 引用 | 这几条错了不会在本机报错，只会在别人的 profile 里炸，或者让插件管理页显示成默认图 + 包名 |
 | 真实模型 | 装进 profile 后从局域网 peer 身份发一句 @，读回真回复 | 只能真跑，没有替代品 |
