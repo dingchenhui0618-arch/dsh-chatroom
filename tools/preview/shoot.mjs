@@ -388,7 +388,14 @@ try {
   const cdp = await Cdp.connect(version.webSocketDebuggerUrl)
   await mkdir(outDir, { recursive: true })
 
-  for (const shot of shots) {
+  // 调某一屏时可以只跑它：--only=history（多屏用逗号）。整轮验收还是不带参数全跑。
+  const only = process.argv
+    .filter((row) => row.startsWith('--only='))
+    .flatMap((row) => row.slice('--only='.length).split(','))
+    .map((row) => row.trim())
+    .filter(Boolean)
+  const targets = only.length ? shots.filter((shot) => only.includes(shot.name)) : shots
+  for (const shot of targets) {
     // 有的状态得先把屋子演进到那一步（例如宿主解散）再截，不能靠假数据摆拍。
     // 这类准备动作作用在宿主那份状态机上，所以固定走宿主端口。
     if (shot.setup) await fetch(`http://127.0.0.1:${port}${shot.setup}`)
@@ -1298,6 +1305,79 @@ try {
       if (!(back.gap <= 2)) throw new Error(`点了「回到最新」却没到底：还差 ${back.gap}px`)
       if (back.rows !== after.rows) throw new Error('回到最新不该丢掉翻出来的历史')
       console.log(`verified — 「回到最新」一步回到这句（离底部 ${back.gap}px，${back.rows} 条仍在）`)
+
+      // 停在上面读历史的时候，屋里又进来话 —— 那两句在屏幕上根本看不见。
+      // 出口上必须写清「几条新的」，否则这枚按钮和一直挂着没区别。
+      const parkedOk = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const flow = document.querySelector('.cr-flow')
+          if (!flow) return false
+          flow.scrollTop = 0
+          flow.dispatchEvent(new Event('scroll'))
+          return true
+        })()`,
+      )
+      if (!parkedOk) throw new Error('滚不回上面')
+      let parked = null
+      for (let i = 0; i < 40; i += 1) {
+        parked = await readTimeline()
+        if (parked.jump) break
+        await sleep(100)
+      }
+      if (!parked.jump) throw new Error('停在上面之后没有回到最新的出口')
+      if (/条新的/.test(parked.jump)) throw new Error(`还没人说话，出口就报数了：${parked.jump}`)
+
+      // 走页面自己的命令通道（和界面发消息同一条路），宿主真落库、长轮询真推回来。
+      const liveRoom = await evaluate(
+        cdp,
+        sessionId,
+        `(async () => {
+          const call = (method, payload, rpcId) =>
+            fetch('/api/dsh.chatroom/' + method, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ type: 'client-request', rpcId: rpcId, method: 'dsh.chatroom/' + method, payload: payload }),
+            }).then((res) => res.json())
+          const snapshot = await call('snapshot', {}, 'live-snapshot')
+          const roomId = snapshot.result.value.activeRoomId
+          const texts = ['这两句是翻着历史时进来的', '第二句也一样']
+          const sent = []
+          for (let i = 0; i < texts.length; i += 1) {
+            const answer = await call('command', { action: 'msg.send', input: { roomId: roomId, text: texts[i], mentions: [], opKey: 'live_' + i } }, 'live-' + i)
+            sent.push(answer.result && answer.result.ok ? 'ok' : JSON.stringify(answer.result && answer.result.error))
+          }
+          return { roomId: roomId, sent: sent }
+        })()`,
+      )
+      if (!liveRoom || !liveRoom.roomId) throw new Error('那两句没发进去')
+      if (liveRoom.sent.some((row) => row !== 'ok')) {
+        throw new Error(`发消息被宿主打回来了：${JSON.stringify(liveRoom)}`)
+      }
+      let live = null
+      for (let i = 0; i < 80; i += 1) {
+        live = await readTimeline()
+        if (live.rows === parked.rows + 2 && /条新的/.test(live.jump || '')) break
+        await sleep(100)
+      }
+      if (live.rows !== parked.rows + 2) throw new Error(`新来的两句没到界面上：${parked.rows} → ${live.rows}`)
+      if (live.last !== '第二句也一样') throw new Error(`最新那句不对：${live.last}`)
+      if (!/回到最新 · 2 条新的/.test(live.jump)) throw new Error(`出口没写清几条新的：${live.jump}`)
+      if (live.scrollTop !== parked.scrollTop) throw new Error(`来新消息把人拽走了：${parked.scrollTop} → ${live.scrollTop}`)
+      console.log(`verified — 停在上头时进来的两句记在出口上：${live.jump}（${live.rows} 条，接缝补上了）`)
+
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-jump').click()`)
+      let cleared = null
+      for (let i = 0; i < 40; i += 1) {
+        cleared = await readTimeline()
+        if (cleared.jump === null) break
+        await sleep(100)
+      }
+      if (cleared.jump !== null) throw new Error('点过之后出口还挂着')
+      if (!(cleared.gap <= 2)) throw new Error(`点了「回到最新」却没到底：还差 ${cleared.gap}px`)
+      console.log(`verified — 点一下回到最新，计数自己消失（离底部 ${cleared.gap}px）`)
     }
     await cdp.send('Target.closeTarget', { targetId })
   }
