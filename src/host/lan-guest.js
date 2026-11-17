@@ -327,8 +327,12 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
         if (runtime.stopped) break
         if (error?.code === 'peer_unknown') {
           since = -1
-          await rejoin(linkId)
+          const value = await rejoin(linkId)
           if (runtime.stopped) break
+          // 重新握手也失败时不能立刻再试：403 是秒回的，rejoin 里又有 3 秒熔断会秒回 null，
+          // 两句凑一起就是「一秒打对面几百次」的紧循环（实测 2.5 秒 750 次）。房间被解散、
+          // 地址上换了一台机器都会走到这里，对方可能正在重启，不该被我们按着打。
+          if (!value) await sleep(1500)
           continue
         }
         markStatus(linkId, { status: 'offline', error: String(error?.message ?? error).slice(0, 200) })
@@ -350,7 +354,9 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
       } catch (error) {
         if (runtime.stopped) break
         if (error?.code === 'peer_unknown') {
-          await rejoin(linkId)
+          const value = await rejoin(linkId)
+          // 同上：握手没成功就先等一拍，别把长轮询变成对空地址的紧循环。
+          if (!value) await sleep(1500)
           continue
         }
         await sleep(1500)

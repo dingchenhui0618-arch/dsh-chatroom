@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -456,6 +457,65 @@ test('加入方重启那一刻正交在手上的那一轮：跟着它到新那�
     await (restarted ? restarted.dispose() : Promise.resolve()).catch(() => {})
     await first.dispose().catch(() => {})
     await host.dispose().catch(() => {})
+  }
+})
+
+test('宿主那台屋子没了：加入方退避重试，别对着它打紧循环', async () => {
+  const host = await boot('host-lost')
+  const guest = await boot('guest-lost')
+  let stub = null
+  try {
+    const created = await command(host, 'room.create', { name: '会消失的屋子' })
+    const port = (await snapshot(host)).lan.port
+    await command(guest, 'room.create', { name: '客' })
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+
+    // 换一台「不是我认识的那个宿主」来占这个地址：旧的 peerId 一律 403，
+    // 房间码在它那儿也不存在。房间被解散后又清了 profile、或者换成另一台机器
+    // 用了同一个地址，用户看到的就是这一幕。
+    await host.dispose()
+    const hits = { state: 0, join: 0, other: 0 }
+    stub = createServer((request, response) => {
+      const send = (status, payload) => {
+        response.writeHead(status, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(payload))
+      }
+      const path = String(request.url ?? '').split('?')[0]
+      if (path === '/lan/state') {
+        hits.state += 1
+        send(403, { ok: false, error: { code: 'peer_unknown', message: '这张凭据不算数。' } })
+        return
+      }
+      if (path === '/lan/join') {
+        hits.join += 1
+        send(400, { ok: false, error: { code: 'room_not_found', message: '这间屋子在这台机器上不存在。' } })
+        return
+      }
+      hits.other += 1
+      send(404, { ok: false, error: { code: 'not_found', message: '没有这个接口。' } })
+    })
+    await new Promise((resolve, reject) => {
+      stub.once('error', reject)
+      stub.listen(port, '127.0.0.1', resolve)
+    })
+
+    // 这 2.5 秒里它应该只试几次：重新握手失败之后要等一拍。
+    // 之前是「403 秒回 → 重新握手秒回 null → 立刻再试」，一秒能打几百次。
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    const total = hits.state + hits.join
+    assert.ok(total > 0, '对面还在那儿（只是不认我），它应该继续重试')
+    assert.ok(
+      total <= 20,
+      `重连失败时不该打紧循环：2.5 秒里打了 ${total} 次（state ${hits.state} / join ${hits.join}）`,
+    )
+
+    // 同时界面要能说清「对面没了」，而不是一直挂着在线。
+    const view = await snapshot(guest)
+    assert.equal(view.links[0].status, 'offline')
+    assert.ok(view.links[0].error, '离线原因要能给人看')
+  } finally {
+    if (stub) await new Promise((resolve) => stub.close(resolve))
+    await guest.dispose().catch(() => {})
   }
 })
 
