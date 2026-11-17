@@ -203,6 +203,59 @@ test('全员轮次跨两台机器：三台机器上各有一个 agent，一轮�
   }
 })
 
+test('主持人指派跨机器：主席在 B 那台机器，它 @ 的 A 那台机器上的 agent 要能接上', async () => {
+  const host = await boot('host4', { reply: '宿主：我这边先不说了。' })
+  const alice = await boot('alice4', { reply: '甲：那我补一句，退货率 7.1%。' })
+  // 主席（B 那台机器的 agent）的回复里 @ 了 A 那台机器的 agent —— 这一句得在宿主那边被认出来，
+  // 再把下一轮派到 A。跨机器的 @ 识别是最容易断的一环：文字是从 HTTP 回传到宿主才落库的。
+  const bob = await boot('bob4', { reply: '乙：我建议听 @阿甲 的，他那边有数。' })
+  try {
+    const created = await command(host, 'room.create', { name: '听主席的' })
+    const roomId = created.rooms[0].id
+    await command(host, 'member.createBot', { roomId, name: 'Claude' })
+    const port = (await snapshot(host)).lan.port
+
+    await command(alice, 'room.create', { name: '甲的屋子' })
+    await command(alice, 'member.createBot', { roomId: (await snapshot(alice)).rooms[0].id, name: '阿甲' })
+    await command(alice, 'self.rename', { name: '周荻' })
+    await command(bob, 'room.create', { name: '乙的屋子' })
+    await command(bob, 'member.createBot', { roomId: (await snapshot(bob)).rooms[0].id, name: '阿乙' })
+    await command(bob, 'self.rename', { name: '陈默' })
+    await command(alice, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code, machine: 'GUEST-A' })
+    await command(bob, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code, machine: 'GUEST-B' })
+
+    // 把主席指派给 B 那台机器的 agent
+    const chairId = (await until(async () => {
+      const room = (await snapshot(host)).rooms.find((row) => row.id === roomId)
+      return room.members.find((member) => member.name === '阿乙')
+    }, { label: '宿主看到 B 的 agent' })).id
+    await command(host, 'room.update', { roomId, rules: { chairId } })
+
+    await command(host, 'msg.send', { roomId, text: '先听乙那边的意见。' })
+
+    const room = await until(async () => {
+      const now = (await snapshot(host)).rooms.find((row) => row.id === roomId)
+      const gotChair = now.messages.some((message) => message.authorName === '阿乙')
+      const gotFollow = now.messages.some((message) => message.authorName === '阿甲')
+      return gotChair && gotFollow ? now : null
+    }, { label: '主席发话后把它 @ 的 agent 接上', timeoutMs: 8000 })
+
+    assert.equal(bob.prompts.length, 1, '主席在 B 那台机器上跑')
+    assert.equal(alice.prompts.length, 1, '主席 @ 到的 A 那台机器的 agent 也要被派发')
+    assert.equal(host.prompts.length, 0, '宿主这边不该被拉进来跑模型')
+
+    const byAuthor = Object.fromEntries(
+      room.messages.filter((message) => message.authorKind === 'bot').map((message) => [message.authorName, message]),
+    )
+    assert.equal(byAuthor['阿乙'].origin.machine, 'GUEST-B')
+    assert.equal(byAuthor['阿甲'].origin.machine, 'GUEST-A')
+  } finally {
+    await bob.dispose().catch(() => {})
+    await alice.dispose().catch(() => {})
+    await host.dispose().catch(() => {})
+  }
+})
+
 test('第三方离开：只撤它的人与 agent，另外两台不受影响', async () => {
   const host = await boot('host2', { reply: '宿主' })
   const alice = await boot('alice2', { reply: '甲' })
