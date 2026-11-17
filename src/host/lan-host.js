@@ -324,19 +324,23 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     if (room.remote) fail('remote_room', '这是从别的机器同步过来的房间，不能在这里再当宿主。')
 
     /**
-     * 同一条 link 回来了（桌面端重启、插件重载）：把上一代那一组整组让出来。
+     * 同一条 link 回来了（桌面端重启、插件重载）：上一代那一组不是「另一个人」，
+     * 是**同一个人换了个 peerId**，所以成员要整组接过来，而不是撤掉再建一套。
      *
-     * 加入方的 link 是落盘的，重启之后拿同一个 id 重新握手；不认它的话，宿主这边
-     * 会多出一组「另一个他」——旧那组要等 peerIdle（45s）才被扫掉，而这段时间屋里
-     * 有两个同名的人，@ 到旧的那个还必然超时（那台机器已经不在了）。
+     * 加入方的 link 是落盘的，重启之后拿同一个 id 重新握手。不认它的话，屋里会多出
+     * 一组「另一个他」，旧那组要等 peerIdle（45s）才被扫掉；而这段时间里 @ 到旧的
+     * 那个必然超时（那台机器已经不在了），自己过去说的话也不再属于自己。
+     *
+     * 接过成员 id 还有两个想要的副作用：已读游标连着（不会把整段历史重新标成未读），
+     * 历史消息的 authorId 也对得上（重启不会把自己说过的话变成别人说的）。
      */
     const instance = String(rawInstance ?? '').trim().slice(0, 64)
+    const adopted = []
     if (instance) {
       for (const other of [...peers.values()]) {
         if (other.roomId !== room.id || other.instance !== instance) continue
         peers.delete(other.id)
-        store.commit((draft) => removePeer(draft, { roomId: room.id, peerId: other.id }))
-        log('lan_peer_takeover', { machine: other.machine, address: other.address })
+        adopted.push(other)
       }
     }
 
@@ -363,18 +367,37 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     const humanName = !declaredName || declaredName === store.state.self.name ? label : declaredName
 
     store.commit((draft) => {
-      const human = addMember(draft, {
-        roomId: room.id,
-        member: {
-          id: `h_${peerId.slice(2, 12)}`,
-          kind: 'human',
-          name: humanName,
-          role: '',
-          origin,
-          owner: peerId,
-          reach: 'lan',
-        },
-      })
+      if (adopted.length) {
+        const next = getRoom(draft, room.id)
+        for (const other of adopted) {
+          for (const member of next.members) {
+            if (member.owner !== other.id) continue
+            member.owner = peerId
+            // 机器名/地址跟着换：重装、改机器名之后回来，成员列上不该还是旧那台。
+            member.origin = origin
+          }
+        }
+        log('lan_peer_takeover', { machine: label, address, from: adopted.map((other) => other.machine) })
+      }
+      // 接过来的那个人还是同一个人：名字以这次上报为准，成员 id 不动。
+      const inherited = adopted.length
+        ? getRoom(draft, room.id).members.find((member) => member.owner === peerId && member.kind === 'human')
+        : null
+      const human =
+        inherited ??
+        addMember(draft, {
+          roomId: room.id,
+          member: {
+            id: `h_${peerId.slice(2, 12)}`,
+            kind: 'human',
+            name: humanName,
+            role: '',
+            origin,
+            owner: peerId,
+            reach: 'lan',
+          },
+        })
+      if (human.name !== humanName) human.name = humanName
       peer.selfMemberId = human.id
       // 加入那一刻报上来的 agent 名单走同一套对账，和「加入之后补报」共用一条路。
       reconcileAgents(draft, peer, agents, origin)

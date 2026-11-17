@@ -346,6 +346,16 @@ test('加入方的桌面端重启：屋里不会同时坐着两个他，旧那�
     const before = beforeView.rooms.find((room) => room.id === roomId)
     assert.equal(before.members.length, 3, '先确认屋里是：我、周荻、阿丙')
     const oldPeerId = beforeView.lan.peers[0].id
+    const zhouId = before.members.find((row) => row.name === '周荻').id
+    const bingId = before.members.find((row) => row.name === '阿丙').id
+
+    // 重启之前先说一句：回来之后这句还得是「我说的」，不能变成远程某人说的。
+    const mirrorId = (await snapshot(first)).rooms.find((room) => room.remote).id
+    await command(first, 'msg.send', { roomId: mirrorId, text: '重启之前我说过这句。' })
+    await until(async () => {
+      const room = (await snapshot(host)).rooms.find((row) => row.id === roomId)
+      return room.messages.find((message) => message.text.includes('重启之前我说过这句'))
+    }, { label: '重启前那句落库' })
 
     // 桌面端重启：不 leave，关掉这一代，用同一份 profile 再 apply 一次。
     // 加入方的 link 是落盘的，所以它自己会重新握手 —— 宿主必须认得出这是同一个人。
@@ -365,6 +375,18 @@ test('加入方的桌面端重启：屋里不会同时坐着两个他，旧那�
     }, { timeoutMs: 6000, label: '宿主把旧那组让位，只留一份' })
     assert.equal(settled.room.members.length, 3, '重启不该在屋里多留一组人')
     assert.equal(settled.view.lan.peers[0].canAgents, true, '重新握手也要带上能力位')
+
+    // 换的是 peerId，不是人：成员 id 不动，已读游标和历史署名才连得回去。
+    assert.equal(settled.room.members.find((row) => row.name === '周荻').id, zhouId, '人的成员 id 不该换')
+    assert.equal(settled.room.members.find((row) => row.name === '阿丙').id, bingId, 'agent 的成员 id 不该换')
+    const mirrorAfter = await until(async () => {
+      const view = await snapshot(restarted)
+      const room = view.rooms.find((row) => row.remote)
+      return room && room.messages.find((message) => message.text.includes('重启之前我说过这句')) ? room : null
+    }, { label: '镜像把重启前那句带回来' })
+    const mine = mirrorAfter.messages.find((message) => message.text.includes('重启之前我说过这句'))
+    assert.equal(mine.authorId, 'me', '重启之后，我过去说的话还是我说的')
+    assert.equal(mine.origin.kind, 'local')
 
     // 让位之后派发要落在新的那组上：不然「回来的那个人」看着在线，@ 他必然超时。
     await command(host, 'msg.send', { roomId, text: '@阿丙 重启之后还在吗？' })
