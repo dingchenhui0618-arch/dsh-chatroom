@@ -47,7 +47,7 @@ const shots = [
     name: 'panel',
     view: 'panel',
     waitFor: '.cr-msg',
-    verify: ['panel-read', 'agent-edit'],
+    verify: ['panel-read', 'agent-edit', 'confirm-delete'],
     caption: '房间面板：房间列表 / 群聊 / 成员与规则入口；从 LAN 加入的人和他的 agent 带远程 chip',
   },
   {
@@ -789,6 +789,128 @@ try {
       console.log('verified — 面板可见时新消息直接算已读（未读不会涨）')
     }
 
+    // 删掉一个 agent、解散一间屋子都收不回来：点一次不该直接生效。
+    // 这里走真实点击 —— 第一次点只问一句，答完才真删；取消之后必须回到原样，
+    // 而且「别人屋里的成员身份」「整间屋子的记录」都不该被一次误点带走。
+    if (wants(shot, 'confirm-delete')) {
+      // React 一帧之后才重渲染，点击后给一帧的时间再读状态。
+      const chipState = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const button = (label) =>
+              [...document.querySelectorAll('button')].some((n) => n.textContent.trim() === label)
+            return {
+              ask: document.querySelectorAll('.cr-agent-ask').length,
+              names: [...document.querySelectorAll('.cr-agent-chip')].map((n) => String(n.textContent).trim()),
+              confirmText: (document.querySelector('.cr-confirm-text') || {}).textContent || null,
+              dissolveBtn: button('解散房间'),
+              dissolveYes: button('确定解散'),
+              rooms: document.querySelectorAll('.cr-room').length,
+            }
+          })()`,
+        )
+      const before = await chipState()
+      const botsBefore = before.names.length
+      if (!botsBefore) throw new Error('这一屏的「我的 agent」是空的，这条断言没东西可点')
+
+      // 1) 点 × 只问一句：agent 还在，也还没有走到「真的删掉」那一步
+      const askClicked = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const btn = document.querySelector('.cr-agent-chip .cr-agent-x')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`,
+      )
+      if (!askClicked) throw new Error('点不到 agent 上的 ×')
+      await sleep(320)
+      const asking = await chipState()
+      if (asking.ask !== 1) throw new Error(`点一次 × 没有进入确认态：${JSON.stringify(asking)}`)
+      if (asking.names.length !== botsBefore) {
+        throw new Error(`还没确认就把 agent 删了：${botsBefore} → ${asking.names.length}`)
+      }
+
+      // 2) 取消之后回到原来那颗
+      const cancelled = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const btn = document.querySelector('.cr-agent-ask .cr-agent-x')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`,
+      )
+      if (!cancelled) throw new Error('确认态上点不到取消')
+      await sleep(320)
+      const back = await chipState()
+      if (back.ask !== 0 || back.names.length !== botsBefore) {
+        throw new Error(`取消之后没回到原样：${JSON.stringify(back)}`)
+      }
+
+      // 3) 解散房间：点一次只出「确定解散」，屋子还在列表里
+      const openedRules = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const btn = [...document.querySelectorAll('button')].find((n) => n.textContent.trim() === '规则')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`,
+      )
+      if (!openedRules) throw new Error('点不到「规则」')
+      await sleep(320)
+      const roomsBeforeDissolve = (await chipState()).rooms
+      const clickedDissolve = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const btn = [...document.querySelectorAll('button')].find((n) => n.textContent.trim() === '解散房间')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`,
+      )
+      if (!clickedDissolve) throw new Error('点不到「解散房间」')
+      await sleep(350)
+      const guarded = await chipState()
+      if (!guarded.confirmText || !/没了/.test(guarded.confirmText)) {
+        throw new Error(`解散没有先说清后果：${JSON.stringify(guarded)}`)
+      }
+      if (guarded.rooms !== roomsBeforeDissolve) {
+        throw new Error(`还没确认就把屋子解散了：${roomsBeforeDissolve} → ${guarded.rooms}`)
+      }
+      if (guarded.dissolveBtn || !guarded.dissolveYes) {
+        throw new Error(`确认态里还留着原来那颗「解散房间」，容易连点两次：${JSON.stringify(guarded)}`)
+      }
+
+      // 4) 点取消退回去，屋子还在
+      const cancelledDissolve = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const row = document.querySelector('.cr-confirm-row')
+          const btn = row && [...row.querySelectorAll('button')].find((n) => n.textContent.trim() === '取消')
+          if (!btn) return false
+          btn.click()
+          return true
+        })()`,
+      )
+      if (!cancelledDissolve) throw new Error('确认态上点不到取消')
+      await sleep(320)
+      const restored = await chipState()
+      if (!restored.dissolveBtn || restored.confirmText) {
+        throw new Error(`取消之后没回到「解散房间」：${JSON.stringify(restored)}`)
+      }
+      if (restored.rooms !== roomsBeforeDissolve) throw new Error('取消解散之后屋子数变了')
+      console.log('verified — 删 agent / 解散屋子都要先问一句：点一次不生效，取消后原样')
+    }
+
     // 加入失败：这是第二台机器的人最可能撞上的状态（地址写错、那台没开、码不对）。
     // 界面必须说人话、把填过的内容留着，而且不能在列表里留下半间屋子让人以为进去了。
     if (wants(shot, 'join-error')) {
@@ -1165,6 +1287,7 @@ try {
       }
       if (!find(created, '临时 agent')) throw new Error('建完的 agent 没进这间屋子')
 
+      // 删掉 agent 不是一次点击的事：先点 × 只会问一句，答完才真删。
       await evaluate(
         cdp,
         sessionId,
@@ -1178,6 +1301,44 @@ try {
           return true
         })()`,
       )
+      let asked = false
+      for (let i = 0; i < 40; i += 1) {
+        asked = await evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const rows = [...document.querySelectorAll('.cr-agent-ask')]
+            return rows.length === 1 && /删掉/.test(String(rows[0].textContent))
+          })()`,
+        )
+        if (asked) break
+        await sleep(80)
+      }
+      if (!asked) throw new Error('点一次 × 没进入「删掉它？」的确认态')
+      // 确认态里那颗 chip 已经不显示名字了（换成了「删掉它？」），所以「还在不在」
+      // 要看成员列和 chip 数量：成员列里那个 agent 必须还在，说明没提前删。
+      const pending = await evaluate(
+        cdp,
+        sessionId,
+        `(() => ({
+          members: [...document.querySelectorAll('.cr-member-name')].map((n) => n.textContent.trim()),
+          chips: document.querySelectorAll('.cr-agent-chip').length,
+        }))()`,
+      )
+      if (!pending.members.includes('临时 agent')) {
+        throw new Error(`还没确认就把 agent 从屋里删走了：${JSON.stringify(pending.members)}`)
+      }
+      const confirmed = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const button = document.querySelector('.cr-agent-ask .cr-agent-yes')
+          if (!button) return false
+          button.click()
+          return true
+        })()`,
+      )
+      if (!confirmed) throw new Error('确认态上点不到「删掉」')
       let removed = null
       for (let i = 0; i < 60; i += 1) {
         removed = await read()
@@ -1189,7 +1350,7 @@ try {
       }
       // 这一屏专开的演示例房间收掉：后面的截图不该带着上一屏的故事。
       await fetch(`http://127.0.0.1:${port}/preview/tidy`)
-      console.log('verified — 空手加入的机器补建 agent：成员列当场多一个 LAN·陈默的 ThinkPad，@ 它能跑一轮；左栏能建能删')
+      console.log('verified — 空手加入的机器补建 agent：成员列当场多一个 LAN·陈默的 ThinkPad，@ 它能跑一轮；左栏能建、删之前先问一句')
     }
     // 两台机器的插件版本不一样：老机器报不了 agent 名单，界面必须说清是哪台、该做什么。
     // 「每台机器带了谁」是宿主这边唯一的反馈回路 —— 少了它，用户只能看到 agent 没进来。

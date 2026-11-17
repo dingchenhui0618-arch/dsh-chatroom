@@ -66,6 +66,9 @@
     color: #cdd6ff;
   }
   .rail-nav { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  /* 插件自己往侧栏画的那颗图标也钉一层：它是内联 SVG，落在半像素上时描边边缘
+     会差几级灰度（实测 guest 那张有 4 个像素、峰值 37/255）。 */
+  #root-nav { transform: translateZ(0); }
 
   /* 主区 */
   .stage { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }

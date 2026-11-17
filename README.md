@@ -10,7 +10,7 @@
 
 ## 截图
 
-十六张图都是**真渲染**：页面里跑的就是本仓库的 `lib/client.js`，数据来自 `src/host` 里那几份真状态机
+十七张图都是**真渲染**：页面里跑的就是本仓库的 `lib/client.js`，数据来自 `src/host` 里那几份真状态机
 （房间、成员、消息、未读游标、发言规则、LAN 派发都是真的走一遍），不是手画的 mockup。
 屋里那几位 `LAN` 成员不是画上去的：面板、agent 表单、邀请、规则、加入方视角、三台机器同屋、版本不一致、已解散这几张里，
 他们都是另外的进程用房间码真的加入进来的；「三台机器同屋」那张是**第三个进程**也进了同一间屋；
@@ -151,6 +151,15 @@
 加入方那台机器也能翻：镜像里只有宿主发过来的 200 条，更早的走 `/lan/messages` 去宿主那台要，
 而且**只能翻到自己加入的那间屋子**（房间从凭据里认，不是从请求里认）。
 
+![装进真的 DeepSeek Harness 之后的样子](docs/real-shell.png)
+
+上面十七张是「真客户端 + 替身外壳」，这一张是**装进真 DSH 之后**的样子：临时 `DSH_HOME`、`dsh plugin --profile web add`
+把这个仓库装进一个真 profile、起 `dsh web`，无头 Chrome 拿真 token 打开页面，然后**真的去点**——
+侧栏「聊天室」→ 建房 → 加一个 agent → 发一句；截图之前那间屋子、那两个成员、那条消息已经经真 RPC 落进宿主状态里了
+（量到的网格 1160×900、左栏 224px、主按钮 `rgb(21,21,23)` on `rgb(249,250,251)`）。
+它不进像素门禁（前置要先联网装一个固定版本的 `dsh`），但复现是一条命令：
+`node tools/real-shell.mjs --url "<dsh web 启动时打印的地址>" --out docs/real-shell.png`（前置步骤写在脚本头上）。
+
 > 截图口径：`docs/*.png` 由 `tools/preview/` 用无头 Chrome 截取，视口 1440×900、2× 缩放。
 > 预览服务器起**两份预览页面**（3491 宿主 / 3492 加入方）；第三台机器、以及「空手加入再补建 agent」
 > 那台机器，都在同一个进程里各起一份 Store 与 LAN 监听、走真实协议按需加入
@@ -164,7 +173,9 @@
 > 所以截图脚本会按需另起一台 `PREVIEW_EMPTY=1` 的服务（同一个 `server.mjs`、同一份真状态机，只是不种房间），
 > 截完就关，不动你自己跑起来的那台。
 > 侧栏那枚圆角图标钉进了自己的一层（`transform: translateZ(0)`）：不钉的话它两次截图之间会落在半像素上，
-> 抗锯齿边缘差 1–6/255，重跑比对就不是逐字节相同了。钉住之后两轮独立重跑 **17 张图 0 像素差异**。
+> 抗锯齿边缘差 1–6/255，重跑比对就不是逐字节相同了。插件自己画进侧栏的那颗会话图标同样钉了一层（`#root-nav`）——
+> 它是内联 SVG，`docs/guest.png` 上出现过 4 个像素、峰值 37/255 的描边残差，钉住之后同一屏连跑两次逐字节相同。
+> 钉住之后两轮独立重跑 **17 张图 0 像素差异**。
 > 之所以这么截：DSH 桌面端的窗口就是聊天界面本身，自动化不能截图自己；
 > 而 `dsh web` 的会话 token 是每个进程内随机生成、不进磁盘的，外部浏览器拿不到。
 > 截「已解散」那张之前，预览服务器会先调一次宿主的 `room.dissolve`（走插件自己的 command，不是摆拍），
@@ -443,6 +454,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 真实渲染（刚装好 / 面板 / 邀请 / 加入失败 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 补建 agent / 版本不一致 / 重试 / 已解散 / 谁都没接 / 往回翻历史 / 翻着历史时来新消息） | ✅ 已验证 | `docs/empty.png`、`docs/panel.png`、`docs/invite.png`、`docs/join-error.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/bring-agent.png`、`docs/old-peer.png`、`docs/retry.png`、`docs/gone.png`、`docs/no-reply.png`、`docs/history.png`、`docs/history-live.png`；两轮独立重跑 17 张 0 像素差异 |
 | **一间屋子都没有时的第一屏**（新装的人看到的第一个界面） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'first-run'`（另起一台 `PREVIEW_EMPTY=1` 的预览服务，真状态机、只是没房间）：断言 0 间屋子、网格只剩 2 列（不占一根空成员列）、标题/说明/脚注都在且说明里讲清「六位房间码」与「agent」、脚注指向「规则」、没有没填上的占位；两个入口写着「新建房间｜加入 LAN 房间」、高度 ≥24px、不越视口、说明块 ≤460px 且不压到左栏、无横向溢出；然后**真的去点**这两个入口 —— 新建开出两个输入 + 「建好」表单，加入开出「地址 + 六位房间码 + 加入」表单，取消之后首屏还在。见 `docs/empty.png` |
 | **主按钮的字在真主题里看得见** | ✅ 已验证 | 这一屏暴露的真问题：默认深色主题 `--dsw-alias-brand-primary` 是近白 `#f9fafb`，而 `.cr-btn.cr-primary` 把文字写死成 `#fff` —— 白底白字，按钮上等于没有字（旧 `docs/panel.png` 的「发送」、旧 `docs/empty.png` 的「新建房间」都是这样）。改成反色 `--cr-on-accent: var(--dsw-alias-bg-base)`（深色主题 `#151517`、浅色主题自然反过来），重出的图里「发送」「新建房间」「建好」「加入」都读得出来 |
+| **删 agent、解散屋子都收不回来，点一次不该就生效** | ✅ 已验证 | 真实渲染里 `verify: 'confirm-delete'`：点 agent 上那颗 `×` 只出「删掉它？」——成员列里那个 agent 还在、chip 数量不变；点「取消」回到原来那颗。规则区点「解散房间」只出「解散后这间屋子和里面的记录都会没了」+「确定解散 / 取消」，屋子数不变、原来那颗「解散房间」已经不在（想连点两次也没有第二次）；点「取消」退回单个按钮、屋子还在。反证：同一组断言拿旧客户端跑，点一次 `×` 当场把 agent 从「我的 agent」删掉（2 条掉成 1 条），断言红在第一句 —— 也就是说这之前误点一次，那个 agent 和它在各间屋子里的成员身份就一起没了 |
 | **加入失败时界面说人话**（地址写错 / 那台没开 / 码不对，是第二台机器最常撞上的状态） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'join-error'`：真去连一个「刚占过又放掉」的端口 → 断言横幅写清「连不上 127.0.0.1:4599（对面那台没在监听这个端口）」、不含 `fetch failed` / 内部错误码，填过的地址与房间码仍在表单里、按钮还在（不用从零重敲），房间列表没多出半间屋子。这个端口现在从固定候选号里挑（文案里带着端口号，随机会让每次重跑图都不一样）。见 `docs/join-error.png`；单测 `test/lan.test.mjs` 另有一条断言同样的文案（旧代码会输出 `连不上 http://127.0.0.1:PORT/lan/join（fetch failed）。`） |
 | **没回上来的那条消息不该被页面级横幅的样式带脏** | ✅ 已验证 | 失败的占位行用的是 `.cr-msg.cr-error`，页面级错误横幅原来也叫 `.cr-error` —— 两个类名撞在一起，横幅的底色与 16px 缩进会套到每一条失败消息上（旧 `docs/retry.png` 里行首内缩、署名被染红）。横幅改名 `.cr-error-bar` 后重出 `docs/retry.png`，与旧图比 15258 像素、峰值 238/255 的差异就是这一处修复 |
 | **说了一句没人接时界面要解释**（默认只开「被 @ 必回」，这是新用户第一句话就撞上的处境） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'no-reply'`：真实渲染里断言那句解释写清「没叫到 agent + 怎么写才叫到」、并且挂在刚说的那句下面；接着把输入框改成 `@账期 agent …` 点「发送」，断言 agent 真接上话、那句解释自己消失（正面反面都验）；浮窗里再断言同一句话，且不指名浮窗里没有的那个按钮。见 `docs/no-reply.png` |
@@ -455,6 +467,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **市场那条安装命令装完就能跑**（不是只装了个包） | ✅ 已验证（真 CLI + 真 DSH web） | 临时目录装 `@deepseek-ai/dsh@0.2.2-rc.1`、`DSH_HOME` 指空目录 → `dsh plugin --profile web add github:dingchenhui0618-arch/dsh-chatroom`：pnpm 4.7 秒装完 1 个包，profile `package.json` 的依赖是 `github:…`、`dsh.profile.bundles` 自动补上 `dsh-chatroom`；`dsh --profile web --port 3411`（`DSH_CHATROOM_PORT=4455`）起来后宿主打 `[dsh-chatroom] lan_listening 4455`、`/lan/ping` 的 `serving` 为 true、用不存在的房间码打 `/lan/join` 得 `room_not_found`，真页面预加载清单含 `dsh-chatroom/client.js`（取回来与 `lib/client.js` 同源，只多一行 `sourceMappingURL`）。代码点没动：`97271b0` 之后只改过文档 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | **真外壳里界面也真渲染出来**（不只是「面板 HTML 拿得到」） | ✅ 已验证（真 `dsh web` + 真 URL 的无头 Chrome） | 从 GitHub 装进空 profile 起的 `dsh web` 上用无头 Chrome 打开真页面：侧栏出现「聊天室」（带未读徽标），点进去是完整三栏（房间列表 / 群聊 / 成员），房间码、`邀请`/`规则`、`让全员说一轮`、成员列都渲染出来；会话页那块悬浮窗也在该在的位置。这一轮就是靠它抓到两个只有真主题/真外壳才暴露的问题：①浮窗底色取了 `bg-overlay`（这套主题里是 `#61666b` 的灰）比宿主面板亮一截，改用 `bg-layer-2`（`#2c2c2e`）；②默认名字本来就是「我」时，自己的消息署成「我（我）」，改成名字已经是「我」就不再追加后缀。两处都在真外壳里重验过 |
+| **真外壳里的样子也留了证据**（不是只有替身页面的图） | ✅ 已验证（真 `dsh web`） | `docs/real-shell.png`：临时 `DSH_HOME` + `dsh plugin --profile web add D:/Projects/dsh-chatroom` + `dsh --profile web --port 3411` 起一份真外壳，无头 Chrome 用真 token 打开 → 关掉外壳自己的两个提示 → 真点侧栏「聊天室」→ 建房 → 加一个 agent → 发一句；截图前断言 1 间屋子 / 2 个成员 / 1 条消息 / 0 个弹窗还盖着、网格 1160×900、左栏 224px、主按钮 `rgb(21,21,23)` on `rgb(249,250,251)`。复现：`node tools/real-shell.mjs --url "<dsh web 启动时打印的地址>" --out docs/real-shell.png` |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：这一台跑 `node tools/lan-check.mjs host`，真机器上照抄它打印的 guest 命令；两段都过即验收（第二段连「派回我这台跑我自己的 agent」一起验） |
 
 ## 边界（这一版明确不做）
@@ -481,7 +494,11 @@ npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
 node tools/lan-check.mjs host|guest   # 两台机器之间的联通自检
+node tools/real-shell.mjs --url "<dsh web 启动时打印的地址>" --out docs/real-shell.png   # 装进真 DSH 之后的样子
 ```
+
+钉层之后这件事就定下来了：那十七张现在**两轮独立重跑逐字节相同**（替身侧栏和插件自己画的侧栏图标都钉过一层）。
+所以重跑时 `docs/` 里再冒出个别像素的差异，就该去查「是不是又有元素落在半像素上」，而不是当成噪声提交或还原。
 
 截图里的消息时间、房间码、宿主 LAN 端口都钉死了（`tools/preview/fixture.mjs`），
 所以重复跑出来的图只差抗锯齿噪点 —— `docs/` 的 diff 才看得懂谁真的改了界面。
@@ -525,6 +542,7 @@ src/host/lan-guest.js 加入方：握手、镜像投影、领任务并用自己�
 src/host/lan-bridge.js 把宿主/加入者/调度器接在一起
 src/host/plugin.js    路由、命令分发
 tools/lan-check.mjs   两台机器之间的联通自检
+tools/real-shell.mjs  装进真 DSH 之后的样子：真页面、真点击、真 RPC，再截图
 tools/preview/        真实渲染截图工具（两份替身 + 无头 Chrome）
 test/                 状态机 / 端到端 / LAN / 客户端装载
 ```
