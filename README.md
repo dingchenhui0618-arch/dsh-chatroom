@@ -172,6 +172,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | LAN 重连（宿主换一代进程 → 加入方不手动操作就能继续说话，成员不重复） | ✅ 已验证 | 同上：同一端口重开宿主，旧 `peerId` 失效后 `msg.send` 自己重新握手并落库 |
 | LAN 清扫（关掉的机器被撤掉；长轮询中 / 正在跑模型的机器不被误清） | ✅ 已验证 | 同上：把 idle 压到 400ms 跑真清扫，1.2s 后仍在屋里，关掉后整组消失 |
 | LAN 解散（宿主解散 → 加入方留墓碑、只能移除，不是死胡同） | ✅ 已验证 | 同上：`remote_room_gone` + 移除后 `links` 清空 |
+| LAN 请求面**不会被坏包打死**（畸形 `Host` / 非法请求行 / 超大 body / 非 JSON / 未知路径） | ✅ 已验证 | `test/lan-hardening.test.mjs` 3 用例：直接往 socket 灌字节，断言每条都有状态码、之后宿主仍能服务、全程零未处理拒绝。拿修复前的代码跑同一组测试，3 条全红 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
@@ -187,6 +188,11 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 - **不做账号体系、不做公网多租户**：房间是「这台机器 + 你请进来的局域网机器」。
   LAN 用**明文 HTTP + 房间码**，威胁模型是「同一个 WiFi 下可信的人」，不是公网。
   要跨公网得走隧道（白名单中继），那是另一个决定。
+- **对局域网开着的只有一个 HTTP 口，且它扛得住坏包**：不看 `Host` 头、请求行解析不了就回
+  400、body 超过 256 KB 直接拒、任何漏出去的异常都在最外层兜住 —— 一个扫描器或坏客户端
+  发什么都不会把宿主进程带走（这条是修出来的，见 `test/lan-hardening.test.mjs`）。
+  但这不等于「防得住同网段的人」：**能连上 4399 的人就是能读屋里消息的人**，房间码是
+  进门的唯一凭据，所以别在不可信的网络里开这个口。
 - 不做附件、撤回、通知推送、手机端。
 - 加入方的镜像房间不能改规则、不能解散：规则只有一份，在宿主那台。
 - 房间成员**不复用 dsh-bot**：那插件的 peer 依赖钉在 `0.2.0-rc.2`，本机 DSH 是 `0.2.2-rc.1`，
@@ -196,7 +202,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 客户端装载 + 包清单（34 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + LAN 抗坏包 + 客户端装载 + 包清单（37 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

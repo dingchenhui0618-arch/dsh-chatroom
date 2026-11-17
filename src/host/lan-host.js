@@ -372,8 +372,33 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return project(store.state, { lan: status(), viewerId: peer.selfMemberId })
   }
 
+  /**
+   * 解析请求地址。
+   *
+   * 不能用请求头里的 Host 当 base —— `Host: [`、带空格的 Host、`GET http://[` 这类
+   * 畸形请求会让 new URL 直接抛 ERR_INVALID_URL，而这是**局域网里任何人**都能发的包。
+   * origin-form 的请求（我们只认这种）根本不需要 Host，所以 base 写死就行。
+   */
+  function targetOf(request) {
+    try {
+      return new URL(String(request.url ?? '/'), 'http://lan.local')
+    } catch {
+      return null
+    }
+  }
+
+  function reject400(response, code, message) {
+    if (response.destroyed || response.writableEnded) return
+    response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+    response.end(JSON.stringify({ ok: false, error: { code, message } }))
+  }
+
   async function route(request, response) {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'host'}`)
+    const url = targetOf(request)
+    if (!url) {
+      reject400(response, 'bad_request', '这个请求的地址没法解析。')
+      return
+    }
     const path = url.pathname.replace(/\/+$/, '') || '/'
     let value
     try {
@@ -550,7 +575,31 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     lastError = null
     pruneStalePeers()
     const next = createServer((request, response) => {
-      void route(request, response)
+      /**
+       * 兜底。
+       *
+       * 这个回调抛出的任何东西都会变成一次未处理的拒绝，而 Node 对未处理的拒绝是
+       * 「当作未捕获异常」—— 宿主进程直接退出。实测一个 `Host: [` 就能把整个
+       * DSH 带走（见 test/lan-hardening.test.mjs）。请求面是对局域网开着的，
+       * 所以这里宁可回 500 也绝不能让异常逃出去。
+       */
+      const swallowed = (error) => {
+        log('lan_request_failed', { error: String(error?.message ?? error) })
+        if (response.destroyed || response.writableEnded) return
+        try {
+          response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          response.end(
+            JSON.stringify({ ok: false, error: { code: 'internal_error', message: '宿主处理这个请求时出错了。' } }),
+          )
+        } catch {
+          /* 连接已经坏了，写不回去也没关系 */
+        }
+      }
+      try {
+        route(request, response).catch(swallowed)
+      } catch (error) {
+        swallowed(error)
+      }
     })
     try {
       await new Promise((resolve, reject) => {
