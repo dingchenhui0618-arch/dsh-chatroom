@@ -138,6 +138,14 @@ const shots = [
     waitFor: 'textarea[disabled]',
     caption: '宿主解散后加入方看到的样子：历史还在、输入锁住、右栏写下原因并只留「从列表移除」',
   },
+  {
+    name: 'no-reply',
+    view: 'panel',
+    setup: '/preview/no-reply',
+    waitFor: '.cr-hint',
+    verify: 'no-reply',
+    caption: '说了一句、谁都没接的时候：界面直接说是「没叫到人」，而不是让人对着一片安静以为插件坏了',
+  },
 ]
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -1081,6 +1089,107 @@ try {
       if (after.errorRows !== 1) throw new Error(`失败占位不该被抹掉或翻倍：${after.errorRows} 条`)
       if (!/缺口 82 万/.test(after.lastText)) throw new Error(`重试后落库的不是那个 agent 的话：${after.lastText}`)
       console.log('verified — 失败留占位，点重试只重跑那一个 agent，回复接在后面（面板与浮窗都验过）')
+    }
+
+    // 说了一句、谁都没接：默认只有「被 @ 才回」，新用户第一句话就是这个处境。
+    // 界面必须当场说清「没叫到人、怎么写才叫到」；而一旦真点到名，agent 接上话，
+    // 那句解释也得自己消失 —— 否则它就变成永远挂着的噪音。
+    if (wants(shot, 'no-reply')) {
+      const said = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const rows = [...document.querySelectorAll('.cr-msg')]
+          const hint = document.querySelector('.cr-hint')
+          return {
+            hint: hint ? String(hint.textContent).trim() : null,
+            rows: rows.length,
+            lastMine: rows.length ? rows[rows.length - 1].classList.contains('cr-mine') : false,
+          }
+        })()`,
+      )
+      if (!said.hint) throw new Error('说完一句没人接，界面上一个字都没解释')
+      if (!/@/.test(said.hint)) throw new Error(`解释里没告诉人怎么写才能叫到 agent：${said.hint}`)
+      if (/undefined|null|NaN/.test(said.hint)) throw new Error(`解释里有没填上的占位：${said.hint}`)
+      if (!said.lastMine) throw new Error('这条解释不是挂在我刚说的那句下面')
+      console.log(`verified — 没人接话时把原因说出来了：${said.hint}`)
+
+      // 浮窗里也有输入框，也会撞上同一片安静：同一句解释得在那儿也说一遍。
+      const { targetId: floatTarget } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+      const { sessionId: floatSession } = await cdp.send('Target.attachToTarget', {
+        targetId: floatTarget,
+        flatten: true,
+      })
+      await cdp.send(
+        'Emulation.setDeviceMetricsOverride',
+        { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
+        floatSession,
+      )
+      await cdp.send('Page.enable', {}, floatSession)
+      await cdp.send('Runtime.enable', {}, floatSession)
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?view=session` }, floatSession)
+      await waitForSelector(cdp, floatSession, '.cr-float-pill')
+      await evaluate(cdp, floatSession, `document.querySelector('.cr-float-pill').click()`)
+      await waitForSelector(cdp, floatSession, '.cr-float-hint')
+      const inFloat = await evaluate(
+        cdp,
+        floatSession,
+        `String(document.querySelector('.cr-float-hint').textContent).trim()`,
+      )
+      await cdp.send('Target.closeTarget', { targetId: floatTarget })
+      if (!/@/.test(inFloat)) throw new Error(`浮窗里那句解释不对：${inFloat}`)
+      // 浮窗里没有「让全员说一轮」这个按钮，说法就不能照着面板抄。
+      if (/全员说一轮/.test(inFloat)) throw new Error(`浮窗里指了一个它点不到的按钮：${inFloat}`)
+      console.log(`verified — 浮窗里同样把原因说清楚：${inFloat}`)
+
+      const filled = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const box = document.querySelector('textarea.cr-textarea')
+          if (!box) return false
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          box.focus()
+          setter.call(box, '@账期 agent 缺口按哪天的账期算的？')
+          box.dispatchEvent(new Event('input', { bubbles: true }))
+          return true
+        })()`,
+      )
+      if (!filled) throw new Error('填不进输入框')
+      await sleep(200)
+      const clicked = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const button = [...document.querySelectorAll('button.cr-primary')].find(
+            (node) => node.textContent.trim() === '发送',
+          )
+          if (!button || button.disabled) return false
+          button.click()
+          return true
+        })()`,
+      )
+      if (!clicked) throw new Error('点不出那句点名的话')
+      let after = null
+      for (let i = 0; i < 80; i += 1) {
+        after = await evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const rows = [...document.querySelectorAll('.cr-msg')]
+            return {
+              rows: rows.length,
+              hint: document.querySelectorAll('.cr-hint').length,
+              lastText: rows.length ? rows[rows.length - 1].querySelector('.cr-msg-text').textContent : '',
+            }
+          })()`,
+        )
+        if (after.rows > said.rows && after.hint === 0) break
+        await sleep(100)
+      }
+      if (after.rows <= said.rows) throw new Error(`点名之后 agent 没有接话：${JSON.stringify(after)}`)
+      if (after.hint !== 0) throw new Error('agent 接话之后那句解释还挂着')
+      console.log('verified — 点名之后 agent 真接上了，那句解释自己消失')
     }
     await cdp.send('Target.closeTarget', { targetId })
   }

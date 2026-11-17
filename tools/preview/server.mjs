@@ -127,6 +127,15 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 截图用：「说了一句、谁都没接」那一屏 —— 建一间有 agent 的屋子，说一句没点名的话。
+      if (url.pathname === '/preview/no-reply') {
+        usage.writes += 1
+        await host.noReply()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+
       if (nudge && url.pathname === '/preview/nudge') {
         usage.writes += 1
         nudge()

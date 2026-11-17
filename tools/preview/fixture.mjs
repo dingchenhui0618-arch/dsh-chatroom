@@ -161,8 +161,11 @@ function seedHost(store) {
     say('m_bot_cashflow', '45 天账期下，10 月缺口约 82 万，集中在第二周。把两笔大额应付款挪到 11/03，缺口降到 31 万。')
     say('m_bot_returns', '退货率这版按 6.2% 算的。按现在节奏，Q4 退货成本会多 19 万。')
     say(draft.self.id, '那就先把尾货清仓价挂出来，预算按 7.1% 重算一版。')
+    // 主线那间屋子以一句 agent 回复收尾：它演的是「对话正在进行」，
+    // 不是「我刚说完没人接」—— 后者单独开一间屋子演（见 noReply）。
+    say('m_bot_returns', '尾货清仓价已经挂出去了，按 7.1% 重算 Q4 退货成本压到 14 万。')
     // 留一条未读：截图里才有徽标与提醒可看。
-    markRead(draft, { roomId: room.id, memberId: draft.self.id, seq: room.nextSeq - 2 })
+    markRead(draft, { roomId: room.id, memberId: draft.self.id, seq: room.nextSeq - 1 })
     return room
   })
 }
@@ -253,6 +256,41 @@ export async function bootFixture({ port } = {}) {
         const fresh = side.snapshot().rooms.find((row) => row.id === target.id)
         if (fresh && fresh.messages.some((message) => message.status === 'error')) break
         await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      pinTimes(side.store)
+      return side.snapshot()
+    },
+    /**
+     * 截「说了一句、谁都没接」用：默认规则只有「被 @ 才回」，所以新用户建屋、
+     * 加一个 agent、说一句没点名的话，得到的是一片安静。界面必须把原因说出来，
+     * 否则第一次用就像插件坏了。单独开一间屋子，别把主线房间的历史带脏。
+     */
+    async noReply() {
+      // 上一屏（重试）留了一间演示例房间；这一屏只演「说了一句没人接」，
+      // 左栏不该带着别人的故事。
+      const stale = side.snapshot().rooms.find((row) => row.name === '对账会')
+      if (stale) await side.command({ action: 'room.dissolve', input: { roomId: stale.id } })
+      const created = await side.command({
+        action: 'room.create',
+        input: { name: '尾款对账', topic: '把 11/03 挪款之后的缺口口径定下来' },
+      })
+      const target = created.rooms.find((row) => row.name === '尾款对账')
+      if (!target) throw new Error('没能开出「尾款对账」这间屋子')
+      side.store.commit((draft) => {
+        const fresh = draft.rooms.find((row) => row.id === target.id)
+        if (fresh) fresh.code = 'W6T2HM'
+      })
+      await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_cashflow' } })
+      await side.command({
+        action: 'msg.send',
+        input: { roomId: target.id, text: '11/03 那两笔大额应付款我挪完了，缺口应该比上周小。' },
+      })
+      // 等够一轮的时间再确认真的没人接：假模型再快，也得先被规则派发出去。
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      const fresh = side.snapshot().rooms.find((row) => row.id === target.id)
+      const last = fresh.messages[fresh.messages.length - 1]
+      if (last.authorId !== 'me') {
+        throw new Error(`「没人接话」这一屏里 agent 抢先说了话，条件不成立：${last.authorId}`)
       }
       pinTimes(side.store)
       return side.snapshot()
