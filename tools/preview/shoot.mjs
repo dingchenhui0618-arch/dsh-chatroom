@@ -182,6 +182,29 @@ function assertInside(box, message) {
   if (outside) throw new Error(`${message}：${JSON.stringify(box)}`)
 }
 
+// 预览服务器里那份状态机是活的：上一轮截图会往里补消息、把屋子解散。
+// 拿同一份用过的状态再截一遍，图和断言都会偏，而且看起来还挺像那么回事 —— 所以先确认它是刚起来的。
+async function assertFreshServer() {
+  let info
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/preview/writes`)
+    if (!response.ok) throw Object.assign(new Error('stale server'), { stale: true })
+    info = await response.json()
+  } catch (error) {
+    if (error?.stale) throw new Error(`预览服务器是旧版本（没有 /preview/writes）：重启 npm run preview:serve`)
+    throw new Error(`预览服务器没起来：先跑 npm run preview:serve（期望端口 ${port}）`)
+  }
+  if (Number(info.writes) > 0) {
+    throw new Error(
+      `预览服务器的状态已经被写过 ${info.writes} 次：重启 npm run preview:serve 再截，图才和 docs/ 对得上`,
+    )
+  }
+  return info
+}
+
+const fresh = await assertFreshServer()
+console.log(`preview server fresh — room code ${fresh.roomCode}, LAN port ${fresh.lanPort}`)
+
 const profileDir = await mkdtemp(join(tmpdir(), 'chatroom-shot-'))
 const chrome = spawn(
   CHROME,

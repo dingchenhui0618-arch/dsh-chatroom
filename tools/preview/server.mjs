@@ -21,6 +21,10 @@ const guestPort = Number(process.env.PREVIEW_GUEST_PORT ?? hostPort + 1)
 // 同一个界面每截一次就是一张不同的图。给它一个固定的，被别人占用了再退回随机。
 const wantedLanPort = Number(process.env.PREVIEW_LAN_PORT ?? 4455)
 
+// 「这次状态被写过几次」：截图脚本靠它判断服务器是不是刚起来的。
+// 状态一旦被上一轮补过消息或解散过，再截出来的图就不是 docs/ 里那些了。
+const usage = { writes: 0 }
+
 let host
 try {
   host = await bootFixture({ port: wantedLanPort })
@@ -94,7 +98,14 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      if (url.pathname === '/preview/writes') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ writes: usage.writes, roomCode: host.code, lanPort: host.lanPort }))
+        return
+      }
+
       if (nudge && url.pathname === '/preview/nudge') {
+        usage.writes += 1
         nudge()
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
@@ -104,6 +115,7 @@ function serve(side, port, { nudge = null } = {}) {
       // 截图用：让宿主真的把那间屋子解散，好去截加入方那边的「墓碑」状态。
       // 走的是插件自己的 command，不是给页面塞假数据。
       if (nudge && url.pathname === '/preview/dissolve') {
+        usage.writes += 1
         const view = host.snapshot()
         const room = view.rooms.find((row) => !row.remote) ?? view.rooms[0]
         if (room) await host.command({ action: 'room.dissolve', input: { roomId: room.id } })
