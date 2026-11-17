@@ -18,7 +18,9 @@ const encoder = new TextEncoder()
 // LAN 监听在 apply() 里就会起来；测试用系统挑的空闲端口，不去抢本机宿主的 4399。
 process.env.DSH_CHATROOM_PORT = '0'
 
-function fakeCtx(dir) {
+const DEFAULT_REPLY = '我看了现金流，数字对得上。'
+
+function fakeCtx(dir, { reply = DEFAULT_REPLY, gate = null } = {}) {
   const routes = new Map()
   const agents = new Map()
   const events = new Map()
@@ -35,6 +37,7 @@ function fakeCtx(dir) {
           .map((block) => block.text)
           .join('\n')
         prompts.push({ sessionId, text, message })
+        const answer = typeof reply === 'function' ? reply(text) : reply
         const list = events.get(sessionId) ?? []
         list.push({
           seq: list.length + 1,
@@ -44,14 +47,17 @@ function fakeCtx(dir) {
             message: {
               id: 'a' + (list.length + 1),
               role: 'assistant',
-              content: [{ type: 'text', text: '我看了现金流，数字对得上。' }],
+              content: [{ type: 'text', text: answer }],
             },
           },
         })
         events.set(sessionId, list)
         session.seq = list.length
       },
-      whenIdle: async () => {},
+      // gate 让测试能把「这一轮还在跑」这个时间窗拉长到可以操作，否则假模型瞬间就跑完了。
+      whenIdle: async () => {
+        if (typeof gate === 'function') await gate()
+      },
     }
     return agent
   }
@@ -227,6 +233,108 @@ test('「让全员说一轮」不靠 @ 也会让所有 agent 各说一句', asyn
     const after = await call(routes, 'snapshot', {})
     assert.equal(after.value.rooms[0].messages.length, 3, '人 1 条 + 两个 agent 各 1 条')
     assert.equal(prompts.length, 2)
+  } finally {
+    await dispose()
+  }
+})
+
+/** prompt 里的「以「X」的身份」就是这一轮被驱动的 agent。 */
+const speakerOf = (text) => text.match(/以「(.+?)」的身份/)?.[1] ?? null
+
+const botsOf = (snapshot) => snapshot.value.rooms[0].members.filter((member) => member.kind === 'bot')
+
+test('三条规则同时开：主持人 @ 的人不会被再调度一次，全员轮次仍然轮到每个人', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  // 主持人先说话，并在回复里 @B —— 这是「chair 接力」和「全员轮流」撞在一起的那条路。
+  const { ctx, routes, prompts } = fakeCtx(dir, {
+    reply: (text) =>
+      text.includes('主持人')
+        ? '现金流这块我先定调：没问题。@B 你把成本那部分补一下。'
+        : '我补一句：这版数字能对上。',
+  })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '三条规则同时开' } })
+    const roomId = created.value.rooms[0].id
+    for (const name of ['A', 'B', 'C']) {
+      await call(routes, 'command', { action: 'member.createBot', input: { roomId, name, role: '参谋' } })
+    }
+    const listed = await call(routes, 'snapshot', {})
+    const bots = botsOf(listed)
+    const chair = bots.find((member) => member.name === 'A')
+    // 三条规则一起开，预算留够 4 个回合：扣掉「同一个人不许说两遍」，三个人正好各一次。
+    const updated = await call(routes, 'command', {
+      action: 'room.update',
+      input: { roomId, rules: { mention: true, roundRobin: true, chairId: chair.id, maxSpeakers: 4 } },
+    })
+    assert.equal(updated.value.rooms[0].rules.roundRobin, true)
+    assert.equal(updated.value.rooms[0].rules.mention, true)
+    assert.equal(updated.value.rooms[0].rules.chairId, chair.id)
+
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@C 你先出个意见' } })
+    await tick(400)
+
+    const after = await call(routes, 'snapshot', {})
+    const replies = after.value.rooms[0].messages.filter((message) => message.authorKind === 'bot')
+    const said = replies.map((message) => message.authorName)
+    assert.deepEqual(said.slice().sort(), ['A', 'B', 'C'], `每个 agent 只能说一次，实际：${said.join('、')}`)
+    assert.equal(prompts.length, 3, `只该驱动三轮回合，实际驱动了 ${prompts.length} 轮`)
+    const driven = prompts.map((prompt) => speakerOf(prompt.text))
+    assert.deepEqual(driven.slice().sort(), ['A', 'B', 'C'], `被驱动的应该恰好是三个人，实际：${driven.join('、')}`)
+    assert.equal(after.value.rooms[0].activity, null, '这一轮结束后不该还挂着发言中')
+  } finally {
+    await dispose()
+  }
+})
+
+test('正在发言时人又说了一句：这句不会被吞掉，等这一轮结束就接上', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  let release = () => {}
+  let open = false
+  const held = new Promise((resolve) => {
+    release = () => {
+      open = true
+      resolve()
+    }
+  })
+  // 把「一轮还没跑完」这个窗口撑开：真实房间里它有好几秒，用户正是在这时候插话。
+  const { ctx, routes, prompts } = fakeCtx(dir, { gate: async () => (open ? null : held) })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '插话' } })
+    const roomId = created.value.rooms[0].id
+    for (const name of ['A', 'B']) {
+      await call(routes, 'command', { action: 'member.createBot', input: { roomId, name } })
+    }
+    await call(routes, 'command', { action: 'room.update', input: { roomId, rules: { roundRobin: true } } })
+
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '每人一句' } })
+    await tick(80)
+    assert.equal(prompts.length, 1, '这一轮应该已经开始（第一句卡在 gate 上）')
+
+    // 这一句发在别人发言中间：它必须被记下来，而不是静默丢掉。
+    const interjected = await call(routes, 'command', {
+      action: 'msg.send',
+      input: { roomId, text: '@B 你等会儿单独说一句' },
+    })
+    const interjectedSeq = interjected.value.rooms[0].messages.find((message) => message.authorKind === 'human' && message.text.includes('单独说一句'))?.seq
+    assert.ok(interjectedSeq, '人那句本身应该已经落进房间')
+
+    release()
+    await tick(600)
+
+    const after = await call(routes, 'snapshot', {})
+    // 第一轮是 A、B 各一句；插话进来后按同一套规则再来一轮（@ 的 B 在前，全员轮到的 A 在后）。
+    assert.equal(prompts.length, 4, `插话应该再引出两轮发言，实际总共 ${prompts.length} 次驱动`)
+    assert.deepEqual(prompts.map((prompt) => speakerOf(prompt.text)), ['A', 'B', 'B', 'A'])
+    assert.match(prompts[2].text, /@B 你等会儿单独说一句/, '接上的那一轮要带上插话本身')
+
+    const replied = after.value.rooms[0].messages.filter(
+      (message) => message.authorKind === 'bot' && message.seq > interjectedSeq && message.authorName === 'B',
+    )
+    // 一句是这一轮自己的台词（排队排在插话后面），一句是插话换来的。
+    assert.equal(replied.length, 2)
+    assert.equal(after.value.rooms[0].activity, null)
   } finally {
     await dispose()
   }

@@ -11,6 +11,12 @@ import { botsOf, getMember, getRoom, isRemoteMember, mentionedBots, postMessage,
  * 三条同时开会撞车，所以有一个总预算：一条人消息最多引出 rules.maxSpeakers
  * 个 agent 回合，agent 之间接力最多 rules.maxDepth 层。预算烧完就停 ——
  * 这是防止一屋子 agent 互相客套把 token 烧光的唯一闸门。
+ *
+ * 另外两条硬规矩，都是从真实使用里踩出来的：
+ *   · 一轮之内同一个人只说一次。主持人 @ 了 B，全员轮次的队列里也有 B，
+ *     B 不该说两句、更不该把预算吃光让排在后面的人永远轮不到。
+ *   · 正在发言时人又说了一句，那句不能丢。真实房间里一轮要好几秒，
+ *     用户就是在这时候插话的；悄悄吞掉等于「@ 了没有反应」。
  */
 
 const fail = (code, message) => {
@@ -75,6 +81,11 @@ function buildPrompt({ room, bot, at }) {
 export function createSpeaker({ store, runner, dispatchRemote = null, log = () => {} }) {
   const running = new Set()
   const aborts = new Map()
+  /** roomId → 这一轮的身份。用来分辨「收尾的是我吗」，避免旧回合把新回合收掉。 */
+  const epochs = new Map()
+  /** 发言中间收到的人消息：不丢，排到这一轮结束后接着处理。 */
+  const pending = new Map()
+  const PENDING_LIMIT = 8
 
   function roomOrFail(roomId) {
     const room = store.inspect((state) => getRoom(state, roomId))
@@ -90,8 +101,11 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     })
   }
 
-  async function speakOne({ roomId, botId, at, depth, budget }) {
+  async function speakOne({ roomId, botId, at, depth, budget, spoke }) {
     if (budget.left <= 0) return
+    // 一轮之内同一个人只说一次：主持人的 @ 和全员队列点到同一个人时，
+    // 后到的那次直接跳过，把预算留给还没开口的人。
+    if (spoke.has(botId)) return
     const room = roomOrFail(roomId)
     const bot = getMember(room, botId)
     if (!bot || bot.kind !== 'bot') return
@@ -103,6 +117,7 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
       log('bot_missing', botId)
       return
     }
+    spoke.add(botId)
     budget.left -= 1
     setActivity(roomId, { speaking: [...(store.inspect((state) => getRoom(state, roomId)?.activity?.speaking) ?? []), bot.name] })
     const controller = new AbortController()
@@ -128,7 +143,7 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
       if (depth < fresh.rules.maxDepth && budget.left > 0) {
         for (const target of mentionedBots(fresh, created)) {
           if (budget.left <= 0) break
-          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget })
+          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget, spoke })
         }
       }
     } catch (error) {
@@ -166,21 +181,55 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     })
   }
 
-  /** 收尾：把 room.activity 归零。 */
-  function settle(roomId) {
+  /**
+   * 收尾：把 room.activity 归零，并且（自然跑完时）接上攒着的人消息。
+   *
+   * token 只有在「收尾的确实还是当前这一轮」时才动手：用户点过「停下」之后
+   * 旧回合才姗姗收尾，不能把已经接手的新回合一起收掉。
+   */
+  function settle(roomId, { drain = false, token } = {}) {
+    if (token !== undefined && epochs.get(roomId) !== token) return
+    epochs.delete(roomId)
     setActivity(roomId, null)
     running.delete(roomId)
+    if (drain) drainPending(roomId)
   }
 
-  /**
-   * 一条人消息进来后，按当前规则决定谁说话。
-   * 不 await：房间面板先看到人那条，agent 的回复随 watch 一帧一帧出现。
-   */
-  function afterHumanMessage({ roomId, messageId }) {
-    if (running.has(roomId)) return
+  function queuePending(roomId, messageId) {
+    const list = pending.get(roomId) ?? []
+    if (!list.includes(messageId)) list.push(messageId)
+    if (list.length > PENDING_LIMIT) list.splice(0, list.length - PENDING_LIMIT)
+    pending.set(roomId, list)
+  }
+
+  function takePending(roomId) {
+    const list = pending.get(roomId)
+    if (!list?.length) return null
+    const next = list.shift()
+    if (!list.length) pending.delete(roomId)
+    return next ?? null
+  }
+
+  /** 这一轮结束了，把排在后面的人消息依次接上。 */
+  function drainPending(roomId) {
+    for (;;) {
+      if (running.has(roomId)) return
+      const next = takePending(roomId)
+      if (!next) return
+      try {
+        if (start({ roomId, messageId: next })) return
+      } catch (error) {
+        // 房间被解散之类：这条就没地方可说了，丢掉继续看下一条。
+        log('pending_failed', { roomId, error })
+      }
+    }
+  }
+
+  /** 按当前规则决定「这条人消息该谁说话」。没人要说话返回 false。 */
+  function start({ roomId, messageId }) {
     const room = roomOrFail(roomId)
     const message = room.messages.find((row) => row.id === messageId)
-    if (!message) return
+    if (!message) return false
     const rules = room.rules
     const queue = []
     const push = (member) => {
@@ -189,8 +238,22 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     if (rules.chairId) push(getMember(room, rules.chairId))
     if (rules.mention) for (const member of mentionedBots(room, message)) push(member)
     if (rules.roundRobin) for (const member of botsOf(room)) push(member)
-    if (!queue.length) return
-    void run(roomId, queue, { kind: rules.chairId && queue[0]?.id === rules.chairId ? 'chair' : 'mention' })
+    if (!queue.length) return false
+    run(roomId, queue, { kind: rules.chairId && queue[0]?.id === rules.chairId ? 'chair' : 'mention' })
+    return true
+  }
+
+  /**
+   * 一条人消息进来后，按当前规则决定谁说话。
+   * 不 await：房间面板先看到人那条，agent 的回复随 watch 一帧一帧出现。
+   */
+  function afterHumanMessage({ roomId, messageId }) {
+    if (running.has(roomId)) {
+      // 别把用户插进来的话吞掉：攒着，等这一轮跑完再按规则处理。
+      queuePending(roomId, messageId)
+      return
+    }
+    if (!start({ roomId, messageId })) drainPending(roomId)
   }
 
   /** 「让全员说一轮」：不看 @，所有 agent 依次各说一句。 */
@@ -211,26 +274,31 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
 
   function run(roomId, queue, { kind }, awaitIt = false) {
     if (running.has(roomId)) fail('room_busy', '这间屋子正在发言，等这一轮结束。')
-    running.add(roomId)
-    setActivity(roomId, { speaking: [], kind, startedAt: new Date().toISOString() })
     const budget = { left: Math.max(1, roomOrFail(roomId).rules.maxSpeakers) }
+    const token = Symbol('round')
+    const spoke = new Set()
+    running.add(roomId)
+    epochs.set(roomId, token)
+    setActivity(roomId, { speaking: [], kind, startedAt: new Date().toISOString() })
     const task = (async () => {
       try {
         for (const [index, member] of queue.entries()) {
           if (budget.left <= 0) break
-          await speakOne({ roomId, botId: member.id, at: index === 0 ? kind : 'round', depth: 0, budget })
+          await speakOne({ roomId, botId: member.id, at: index === 0 ? kind : 'round', depth: 0, budget, spoke })
         }
       } finally {
-        settle(roomId)
+        settle(roomId, { drain: true, token })
       }
     })().catch((error) => {
+      // 收尾交给上面的 finally：这里只管把错误记下来，别再把可能已经接手的新回合收一遍。
       log('round_failed', { roomId, error })
-      settle(roomId)
     })
     return awaitIt ? task : task
   }
 
   function stop(roomId) {
+    // 用户点了「停下」，那就连攒着的那几句也一起放下 —— 不然一停就立刻又开一轮。
+    pending.delete(roomId)
     aborts.get(roomId)?.abort()
     settle(roomId)
   }

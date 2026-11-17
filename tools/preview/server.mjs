@@ -17,8 +17,17 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
 const hostPort = Number(process.env.PREVIEW_PORT ?? 3491)
 const guestPort = Number(process.env.PREVIEW_GUEST_PORT ?? hostPort + 1)
+// 宿主那块局域网监听的端口会印在「邀请」那一屏上；系统随手挑一个的话，
+// 同一个界面每截一次就是一张不同的图。给它一个固定的，被别人占用了再退回随机。
+const wantedLanPort = Number(process.env.PREVIEW_LAN_PORT ?? 4455)
 
-const host = await bootFixture()
+let host
+try {
+  host = await bootFixture({ port: wantedLanPort })
+} catch (error) {
+  console.warn(`[chatroom-preview] 固定端口 ${wantedLanPort} 起不来，改用系统挑的端口：${error?.message ?? error}`)
+  host = await bootFixture({ port: 0 })
+}
 const guest = await bootGuest({ port: host.lanPort, code: host.code })
 await warmUp(host, guest)
 console.log(`preview host room ${host.code} on LAN port ${host.lanPort}`)

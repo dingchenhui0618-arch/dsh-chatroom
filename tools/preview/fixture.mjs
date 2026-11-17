@@ -94,6 +94,24 @@ function fakeCtx(dir, { reply } = {}) {
 
 const now = () => new Date().toISOString()
 
+/**
+ * 把消息时间钉成固定几档。
+ *
+ * 界面上每条消息都带 HH:MM，用真实时间的话每次重新截图都会得到一张像素不同的 PNG ——
+ * docs/ 里那七张图永远全红，真正的改动反而看不出来。截图只看版式与内容，时间钉死即可。
+ */
+const PIN_BASE = Date.parse('2026-11-17T01:30:00.000Z')
+
+export function pinTimes(store) {
+  store.commit((draft) => {
+    for (const room of draft.rooms) {
+      room.messages.forEach((message, index) => {
+        message.at = new Date(PIN_BASE + index * 60_000).toISOString()
+      })
+    }
+  })
+}
+
 function seedHost(store) {
   return store.commit((draft) => {
     draft.self.name = '林岸'
@@ -101,7 +119,10 @@ function seedHost(store) {
       name: 'Q4 复盘 · 现金流',
       topic: '把应付账期和退货率对一遍，产出下一版预算',
     })
-    createRoom(draft, { name: '选品会', topic: '下周上新的三个款' })
+    // 房间码是随机生成的，界面上会显示（邀请那屏就有）——钉死，截图才可复现。
+    room.code = 'K7M2QD'
+    const other = createRoom(draft, { name: '选品会', topic: '下周上新的三个款' })
+    other.code = 'X4RT9B'
     draft.activeRoomId = room.id
 
     const cash = {
@@ -173,6 +194,7 @@ export async function bootFixture({ port } = {}) {
     reply: '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。',
   })
   const room = seedHost(side.store)
+  pinTimes(side.store)
   return {
     ...side,
     dir,
@@ -188,6 +210,7 @@ export async function bootFixture({ port } = {}) {
         target.messages = target.messages.filter((message) => message.text !== text)
         postMessage(draft, { roomId: target.id, authorId: 'm_bot_cashflow', text })
       })
+      pinTimes(side.store)
       return side.snapshot()
     },
   }
@@ -205,6 +228,11 @@ export async function bootGuest({ host = '127.0.0.1', port, code, name = '周荻
   })
   await side.command({ action: 'self.rename', input: { name } })
   const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
+  // 同宿主那边：房间码也钉死，加入方视角的截图才不会每次都不一样。
+  side.store.commit((draft) => {
+    const own = draft.rooms.find((row) => row.id === local.rooms[0].id)
+    if (own) own.code = 'M8NP3C'
+  })
   await side.command({
     action: 'member.createBot',
     input: { roomId: local.rooms[0].id, name: botName, role: '拆尾货与退货结构' },
@@ -236,5 +264,8 @@ export async function warmUp(host, guest) {
     if (room.messages.some((message) => message.authorName === '尾货 agent')) break
     await new Promise((resolve) => setTimeout(resolve, 40))
   }
+  // 两边都补完再钉时间：镜像房间的 at 是宿主的投影，钉完再截才稳定。
+  pinTimes(host.store)
+  pinTimes(guest.store)
   return { mirror }
 }
