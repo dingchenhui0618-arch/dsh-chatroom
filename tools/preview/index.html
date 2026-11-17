@@ -5,15 +5,24 @@
 <title>聊天室 · 渲染验收</title>
 <style>
   /* 外壳只做两件事：提供 DSH 的暗色底与布局骨架，让插件面板落在真实尺寸里。
-     颜色用与 DSH token 同值的回退色，和 lib/client.js 里的 fallback 完全一致。 */
+     取值照 DSH 默认深色主题的真实 token（bg-base #151517 / label-primary #f9fafb /
+     label-secondary #cfd3d6 / brand-primary #f9fafb / border-l1 #ffffff0f / bg-layer-2 #2c2c2e），
+     并原样把 --dsw-alias-* 摆出来 —— 这样截图里插件走的就是宿主那一套颜色，
+     不是「取不到宿主 token 时的回退色」。 */
   :root {
-    --bg: #0d0e11;
-    --surface: #131519;
-    --surface-2: #171a20;
-    --border: rgba(255, 255, 255, 0.08);
-    --text: #e9eaee;
-    --muted: #9aa0aa;
-    --accent: #4f7cff;
+    --bg: #151517;
+    --surface: #18181a;
+    --surface-2: #2c2c2e;
+    --border: #ffffff0f;
+    --text: #f9fafb;
+    --muted: #81858c;
+    --accent: #f9fafb;
+
+    --dsw-alias-label-primary: #f9fafb;
+    --dsw-alias-label-secondary: #cfd3d6;
+    --dsw-alias-border-l1: #ffffff0f;
+    --dsw-alias-bg-layer-2: #2c2c2e;
+    --dsw-alias-brand-primary: #f9fafb;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }

@@ -149,6 +149,9 @@
 > （它们只出现在宿主那几张截图里，自己没有预览页面）。
 > 各份各有自己的 Store 与 LAN 监听，互相走真实的局域网 HTTP 协议。外壳（左侧图标栏、会话标题栏与那两行对话、输入框）是**替身**，
 > 只为给出真实尺寸与上下文；聊天室的面板、悬浮窗、规则区、提醒全部是插件自己的真实渲染。
+> 替身外壳的取色照 DSH 默认深色主题的**真实 token**（`#151517` 底、`#f9fafb` 主文字与品牌色、`#cfd3d6` 次要文字、
+> `#2c2c2e` 抬起层、`#ffffff0f` 发丝线），并把同名 `--dsw-alias-*` 原样摆在页面上 ——
+> 所以图里插件走的是宿主那一套颜色，不是「取不到宿主 token 时的回退色」。
 > 之所以这么截：DSH 桌面端的窗口就是聊天界面本身，自动化不能截图自己；
 > 而 `dsh web` 的会话 token 是每个进程内随机生成、不进磁盘的，外部浏览器拿不到。
 > 截「已解散」那张之前，预览服务器会先调一次宿主的 `room.dissolve`（走插件自己的 command，不是摆拍），
@@ -417,7 +420,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **装了新版怎么让跑着的进程换代码**（不重启桌面端） | ✅ 已验证（真实 profile） | 在设置 → 插件里把 `dsh-chatroom` 关掉再打开：4399 立刻关闭 → 再打开后 `/lan/ping` 的 `appliedAt` 变成那一刻、`newestMtime` 是磁盘上最新的改动、`stale: false`；`shell.overlay` 里 `chatroom-float` 重新注册成 active。改一个文件再探翻成 `stale: true`，重新装载一次又回到 `false`。同一份 profile 上连开三轮：`loadedAt` 一直停在 `11:23:28.880Z`（没改过的模块不重新求值），`appliedAt` 依次 `11:23:29Z → 11:23:48Z → 11:24:02Z`；中间把 `lan-guest.js` 按原字节重写（只动 mtime）→ `stale: true`，再重载 → `false`。从 WSL2 走 `10.0.51.18:4399` 读到的是同一份 JSON。之后又改了一处宿主代码（端口被占时那句提示）、重载一次：`loadedAt` 仍是 `11:23:28.880Z`，`newestMtime` 前进到 `11:33:39.233Z`、比 `loadedAt` 新，`appliedAt` 是 `11:34:23.400Z`，`stale: false` —— 正是旧判据会喊假过期的那个组合 |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
-| **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
+| **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用到的 5 个宿主变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-layer-2`）在当前主题里都存在 |
+| **浮层底色在真实主题里也是对的**（不是取不到 token 时的回退色） | ✅ 已验证（真 `dsh web`） | 起一份真外壳量过：默认深色主题里 `--dsw-alias-bg-overlay` 是 **`#61666b`**（说明图/遮罩那档灰），套到浮窗上就是一块比宿主面板亮一截的灰板；宿主自己抬起来的那层是 `--dsw-alias-bg-layer-2` = `#2c2c2e`，换成它之后浮窗、胶囊、toast、气泡在真外壳里和宿主面板一致（截图重出，两轮独立重跑 16 张逐字节相同） |
 | 包清单自洽（图标 / 中英本地化 / `files` / `exports` 对得上）与**自包含**（`lib`、`src` 里一行 `@deepseek-ai/*` 都没有） | ✅ 已验证 | `test/manifest.test.mjs` 4 用例 |
 | **界面 / 宿主 / 加入方三方的协议面对得上**（这类错没有异常、没有日志，表现只是「点了没反应」） | ✅ 已验证 | `test/protocol.test.mjs` 3 用例：界面调的每个 action 宿主都有分支、界面用的每个 RPC 方法宿主都有端点、加入方敲的每个 `/lan/*` 路由宿主都在服务。把宿主的 `bot.update` 改名成 `bot.patch` 再跑，第一条当场报出来（不是空转） |
 | 未读会涨也会消（面板可见 = 直接已读；浮窗展开 = 清零；面板切走 / 后台不动已读） | ✅ 已验证 | `npm run preview:shots` 在真实渲染的页面里断言两件事：面板可见时新消息不涨未读；隐藏时未读出现、展开浮窗后徽标与标题前缀归零 |
@@ -434,6 +438,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **CI 绿**（ubuntu + node 22/24 跑 `npm install` + `npm test`） | ✅ 已验证 | GitHub Actions `test` 两个 job 各 11–12s 通过（`588733f` 上 run `44092415038` success，node 22 / 24 都绿）；同一套用例先在 WSL2 Ubuntu 22.04 / node v22.22.2 上真跑过一遍全绿才让 CI 去跑 |
 | **市场那条安装命令装完就能跑**（不是只装了个包） | ✅ 已验证（真 CLI + 真 DSH web） | 临时目录装 `@deepseek-ai/dsh@0.2.2-rc.1`、`DSH_HOME` 指空目录 → `dsh plugin --profile web add github:dingchenhui0618-arch/dsh-chatroom`：pnpm 4.7 秒装完 1 个包，profile `package.json` 的依赖是 `github:…`、`dsh.profile.bundles` 自动补上 `dsh-chatroom`；`dsh --profile web --port 3411`（`DSH_CHATROOM_PORT=4455`）起来后宿主打 `[dsh-chatroom] lan_listening 4455`、`/lan/ping` 的 `serving` 为 true、用不存在的房间码打 `/lan/join` 得 `room_not_found`，真页面预加载清单含 `dsh-chatroom/client.js`（取回来与 `lib/client.js` 同源，只多一行 `sourceMappingURL`）。代码点没动：`97271b0` 之后只改过文档 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
+| **真外壳里界面也真渲染出来**（不只是「面板 HTML 拿得到」） | ✅ 已验证（真 `dsh web` + 真 URL 的无头 Chrome） | 从 GitHub 装进空 profile 起的 `dsh web` 上用无头 Chrome 打开真页面：侧栏出现「聊天室」（带未读徽标），点进去是完整三栏（房间列表 / 群聊 / 成员），房间码、`邀请`/`规则`、`让全员说一轮`、成员列都渲染出来；会话页那块悬浮窗也在该在的位置。这一轮就是靠它抓到两个只有真主题/真外壳才暴露的问题：①浮窗底色取了 `bg-overlay`（这套主题里是 `#61666b` 的灰）比宿主面板亮一截，改用 `bg-layer-2`（`#2c2c2e`）；②默认名字本来就是「我」时，自己的消息署成「我（我）」，改成名字已经是「我」就不再追加后缀。两处都在真外壳里重验过 |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：这一台跑 `node tools/lan-check.mjs host`，真机器上照抄它打印的 guest 命令；两段都过即验收（第二段连「派回我这台跑我自己的 agent」一起验） |
 
 ## 边界（这一版明确不做）
