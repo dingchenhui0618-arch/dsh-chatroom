@@ -58,8 +58,19 @@ function fakeCtx(dir, { reply = DEFAULT_REPLY, gate = null } = {}) {
         session.seq = list.length
       },
       // gate 让测试能把「这一轮还在跑」这个时间窗拉长到可以操作，否则假模型瞬间就跑完了。
-      whenIdle: async () => {
-        if (typeof gate === 'function') await gate()
+      // 被 abort 时必须跟真 turn.js 一样抛 cancelled：用户点「停下这一轮」走的就是这条路。
+      whenIdle: async (signal) => {
+        if (typeof gate !== 'function') return
+        const waiting = gate()
+        if (!signal) return waiting
+        await Promise.race([
+          waiting,
+          new Promise((_, reject) => {
+            const stop = () => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))
+            if (signal.aborted) stop()
+            else signal.addEventListener('abort', stop, { once: true })
+          }),
+        ])
       },
     }
     return agent
@@ -615,6 +626,96 @@ test('房间说到一半被解散：那一轮安静收掉，不把 agent 记成�
       null,
       '屋子解散不是这个 agent 的错：不该把 room_not_found/cancelled 记成它的上次失败',
     )
+  } finally {
+    release()
+    await dispose()
+  }
+})
+
+test('「停下这一轮」是真的停住：后面的人不再发言，也不留一条红色「没回上来」', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  let release = () => {}
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const { ctx, routes, prompts } = fakeCtx(dir, { reply: '这句话不该出现在屋里。', gate: () => gate })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '停一下' } })
+    const roomId = created.value.rooms[0].id
+    for (const name of ['A', 'B', 'C']) {
+      await call(routes, 'command', { action: 'member.createBot', input: { roomId, name } })
+    }
+    // 全员轮流：谁也不 @，A、B、C 都该轮到。
+    await call(routes, 'command', {
+      action: 'room.update',
+      input: { roomId, rules: { roundRobin: true, maxSpeakers: 3 } },
+    })
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '各自说说手上那件事' } })
+    // A 正卡在「模型还没回」上，这时候点停下 —— 真实房间里用户就是在这时候点的。
+    await tick(150)
+    const running = (await call(routes, 'snapshot', {})).value
+    assert.equal(running.rooms[0].activity?.speaking?.length, 1, '先得真的有一轮在跑，不然这条测不到东西')
+    const stopped = await call(routes, 'command', { action: 'round.stop', input: { roomId } })
+    assert.equal(stopped.ok, true)
+    release()
+    await tick(500)
+
+    const view = (await call(routes, 'snapshot', {})).value
+    const room = view.rooms[0]
+    assert.equal(
+      room.messages.filter((message) => message.status === 'error').length,
+      0,
+      '停下不是失败：屋里不该留「X 这次没回上来：cancelled」',
+    )
+    assert.equal(prompts.length, 1, '停下之后 B、C 不该再被驱动')
+    assert.equal(
+      view.bots.filter((bot) => bot.lastError).length,
+      0,
+      '停下不是这个 agent 的错，不该记成它的「上次失败」',
+    )
+    assert.equal(room.activity ?? null, null, '停下之后不该还挂着「正在说」')
+  } finally {
+    release()
+    await dispose()
+  }
+})
+
+test('停下之后马上接着说：旧回合的收尾不会把新的一轮也收掉', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-'))
+  let release = () => {}
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let gated = true
+  const { ctx, routes } = fakeCtx(dir, {
+    reply: '收到，我这边清楚。',
+    gate: () => (gated ? gate : Promise.resolve()),
+  })
+  const dispose = await apply(ctx)
+  try {
+    const created = await call(routes, 'command', { action: 'room.create', input: { name: '停完再接上' } })
+    const roomId = created.value.rooms[0].id
+    const made = await call(routes, 'command', { action: 'member.createBot', input: { roomId, name: 'A' } })
+    const botId = made.value.bots.at(-1).id
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 先说一句' } })
+    await tick(150)
+    await call(routes, 'command', { action: 'round.stop', input: { roomId } })
+    // 用户停完立刻又说了句新的：这一轮必须照常跑完并落库。
+    gated = false
+    release()
+    await tick(120)
+    await call(routes, 'command', { action: 'msg.send', input: { roomId, text: '@A 那就说这件' } })
+    await tick(500)
+
+    const view = (await call(routes, 'snapshot', {})).value
+    const room = view.rooms[0]
+    const said = room.messages.filter((message) => message.authorKind === 'bot')
+    assert.equal(said.length, 1, '新的一轮该有一句回复')
+    assert.equal(said[0].status, 'sent')
+    assert.equal(room.messages.filter((message) => message.status === 'error').length, 0)
+    assert.equal(room.activity ?? null, null, '跑完了就该收干净')
+    assert.equal(view.bots.find((bot) => bot.id === botId).lastError ?? null, null)
   } finally {
     release()
     await dispose()

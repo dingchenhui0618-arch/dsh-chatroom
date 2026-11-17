@@ -120,6 +120,27 @@ test('失败占位不进对话记录，模型看不到', () => {
   assert.equal(transcript.includes('能看'), true)
 })
 
+test('给别人看的记录里，远程来的真人也标「人」，不是一律当 agent', () => {
+  const { state, room } = setup()
+  const guest = addMember(state, {
+    roomId: room.id,
+    member: {
+      id: 'h_laochen',
+      kind: 'human',
+      name: '老陈',
+      origin: { kind: 'lan', peer: 'peer-1', machine: '陈默的 ThinkPad' },
+    },
+  })
+  const bot = addBot(state, room, 'Grok')
+  postMessage(state, { roomId: room.id, authorId: guest.id, text: '我这边今天到不了' })
+  postMessage(state, { roomId: room.id, authorId: bot.id, text: '那我先替你看着' })
+  const transcript = transcriptOf(room)
+  // 身份按 authorKind 说，来源按 origin 说：两件事不能混成一句。
+  assert.match(transcript, /〔远程〕老陈（人）：我这边今天到不了/)
+  assert.match(transcript, /Grok（agent）：那我先替你看着/)
+  assert.equal(transcript.includes('老陈（agent）'), false, '远程真人不该被说成 agent')
+})
+
 test('主持人必须是屋里的 agent，移除主持人后自动卸任', () => {
   const { state, room } = setup()
   const bot = addBot(state, room, 'Claude')

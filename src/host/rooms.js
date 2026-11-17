@@ -388,7 +388,13 @@ export function transcriptOf(room, { limit = 24, selfId = 'me' } = {}) {
     .filter((message) => message.status !== 'error')
     .slice(-limit)
     .map((message) => {
-      const who = message.authorId === selfId ? `${message.authorName}（人）` : `${message.authorName}（agent）`
+      // 身份按 authorKind 说，来源按 origin 说 —— 这是两件事。
+      // 以前只按「是不是我」分，结果 LAN 里那台机器上的真人被说成「agent」，
+      // 模型会把他当成另一个 agent 来接话。
+      const human = typeof message.authorKind === 'string'
+        ? message.authorKind === 'human'
+        : message.authorId === selfId
+      const who = `${message.authorName}（${human ? '人' : 'agent'}）`
       const origin = message.origin?.kind === 'lan' ? '〔远程〕' : ''
       return `#${message.seq} ${origin}${who}：${message.text}`
     })

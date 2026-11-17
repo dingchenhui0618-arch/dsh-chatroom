@@ -32,6 +32,23 @@ if (!CHROME) throw new Error('找不到 Chrome 可执行文件')
 // 一张截图可以带多条断言：面板那张既要验「看了就算已读」，也要验「agent 的职责能改」。
 const wants = (shot, name) => (Array.isArray(shot.verify) ? shot.verify.includes(name) : shot.verify === name)
 
+/**
+ * 直接问某一侧宿主「此刻屋里是什么样」。
+ *
+ * 用在加入方那一屏：镜像有没有跟上宿主，只能问出来，不能等时间等出来。
+ * 信封和界面走的是同一条 `/api/dsh.chatroom/snapshot`。
+ */
+async function snapshotOf(target) {
+  const res = await fetch(`http://127.0.0.1:${target}/api/dsh.chatroom/snapshot`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'settle', method: 'dsh.chatroom/snapshot', payload: {} }),
+  })
+  const body = await res.json()
+  if (!body.result?.ok) throw new Error(`问 ${target} 要快照失败：${JSON.stringify(body.result)}`)
+  return body.result.value
+}
+
 const shots = [
   {
     name: 'empty',
@@ -85,7 +102,7 @@ const shots = [
     port: guestPort,
     view: 'panel',
     waitFor: '.cr-msg',
-    settle: 'read',
+    settle: 'mirror',
     caption: '同一间屋子，加入那台机器看到的视角：自己的人是本机，宿主的成员标 LAN · 由 <机器名> 主持',
   },
   {
@@ -609,7 +626,29 @@ try {
     // 截图要截「稳定下来的界面」，不是「刚好路过的中间态」：三台机器那张图里，
     // 远程 agent 的回复会在页面加载之后才落库，未读徽标会在面板可见的情况下
     // 自动清零 —— 等它清完再拍，否则同一份代码两次会拍出带徽标和不带徽标两张。
-    if (shot.settle === 'read') {
+    //
+    // 'mirror' 是加入方那一屏：除了未读要清掉，还得先等它真的把宿主那边跟上来。
+    // 前面几屏验证「面板可见时新消息直接算已读」时会往屋里放一条消息，加入方的
+    // 镜像要不要跟着长，取决于那次长轮询有没有在这几毫秒里回来 —— 只等时间就会
+    // 时好时坏（这一屏曾经因为差了这一条，同一份代码拍出两张不同的图）。
+    if (shot.settle === 'mirror') {
+      const shared = (view) => view.rooms.find((room) => room.remote) ?? view.rooms[0]
+      const mirror = shared(await snapshotOf(shotPort))
+      // 同一间屋子按房间码认：宿主这边不止一间，拿错房间比的就是两件不相干的事。
+      const hostView = await snapshotOf(port)
+      const hostRoom = (mirror && hostView.rooms.find((room) => room.code === mirror.code)) ?? hostView.rooms[0]
+      let synced = false
+      for (let i = 0; i < 60; i += 1) {
+        const now = shared(await snapshotOf(shotPort))
+        if (now && hostRoom && now.nextSeq >= hostRoom.nextSeq) {
+          synced = true
+          break
+        }
+        await sleep(100)
+      }
+      if (!synced) throw new Error('加入方那边的镜像没有跟上宿主：这时候拍下来的不是「同一间屋子」')
+    }
+    if (shot.settle === 'read' || shot.settle === 'mirror') {
       for (let i = 0; i < 40; i += 1) {
         const left = await evaluate(
           cdp,
@@ -1123,6 +1162,48 @@ try {
       if (!(before.badges > 0 || String(before.title).startsWith('('))) {
         throw new Error(`通知没有出现未读：${JSON.stringify(before)}`)
       }
+      // 「有未读」还不够，得让数字读得出来：默认主题里 brand-primary 本身是近白，
+      // 徽标原来写死 color:#fff，实测 1.04:1 —— 截图看着像一坨白点，数字其实是白的。
+      const readable = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+  const parse = (value) => {
+    const hit = String(value).match(/rgba?\\(([^)]+)\\)/)
+    if (!hit) return null
+    const parts = hit[1].split(',').map((row) => Number(row.trim()))
+    return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 }
+  }
+  const luminance = (color) => {
+    const channel = (value) => {
+      const scaled = value / 255
+      return scaled <= 0.03928 ? scaled / 12.92 : Math.pow((scaled + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+  }
+  return [...document.querySelectorAll('.cr-badge, .cr-nav-badge')].map((node) => {
+    const style = getComputedStyle(node)
+    const fg = parse(style.color)
+    const bg = parse(style.backgroundColor)
+    if (!fg || !bg || bg.a === 0) {
+      return { text: String(node.textContent).trim(), fg: style.color, bg: style.backgroundColor, ratio: 0 }
+    }
+    const light = Math.max(luminance(fg), luminance(bg))
+    const dark = Math.min(luminance(fg), luminance(bg))
+    return {
+      text: String(node.textContent).trim(),
+      fg: style.color,
+      bg: style.backgroundColor,
+      ratio: Math.round((light + 0.05) / (dark + 0.05) * 100) / 100,
+    }
+  })
+})()`,
+      )
+      const weak = readable.filter((row) => row.ratio < 4.5)
+      if (weak.length) {
+        throw new Error(`未读数字在徽标上读不清（对比度低于 4.5:1，甚至白字白底）：${JSON.stringify(weak)}`)
+      }
+      console.log(`verified — 未读数字是反色的：${readable.map((row) => `${row.text}→${row.ratio}:1`).join('、')}`)
       const opened = await evaluate(cdp, sessionId, `(() => {
         const node = document.querySelector('.cr-float-pill')
         if (!node) return false

@@ -24,6 +24,17 @@ const fail = (code, message) => {
 }
 
 /**
+ * 「这一轮是被叫停的」而不是「它回不上来」。
+ *
+ * 真 turn.js 被 abort 时抛 code: 'cancelled'；远程派发那边可能给 AbortError。
+ * 两者都算用户自己按了停 —— 不是这个 agent 的失败，不该在屋里留红色占位。
+ */
+const isCancelled = (error) => {
+  const code = String(error?.code ?? '')
+  return code === 'cancelled' || code === 'aborted' || error?.name === 'AbortError'
+}
+
+/**
  * 派发出去等对面机器时也得能喊停：本机点「停下这一轮」就不要再等。
  * 宿主那边的 assignment 会在超时后自己收尾，所以这里丢下它不会留下半个回合。
  */
@@ -101,7 +112,7 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     })
   }
 
-  async function speakOne({ roomId, botId, at, depth, budget, spoke }) {
+  async function speakOne({ roomId, botId, at, depth, budget, spoke, token }) {
     if (budget.left <= 0) return
     // 一轮之内同一个人只说一次：主持人的 @ 和全员队列点到同一个人时，
     // 后到的那次直接跳过，把预算留给还没开口的人。
@@ -143,16 +154,18 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
       if (depth < fresh.rules.maxDepth && budget.left > 0) {
         for (const target of mentionedBots(fresh, created)) {
           if (budget.left <= 0) break
-          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget, spoke })
+          // 这一轮已经被「停下」了：接力也别再往下传。
+          if (epochs.get(roomId) !== token) break
+          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget, spoke, token })
         }
       }
     } catch (error) {
       log('bot_turn_failed', { botId, error })
       const alive = store.inspect((state) => getRoom(state, roomId))
-      // 屋子已经没了（被解散、或镜像那边收到解散）：这一轮的静默收尾不是 agent 的错。
-      // 把 room_not_found / cancelled 记成「上次失败」，用户会在 agent 列表里看到一条
-      // 莫名其妙的红色提示，而实际上它只是替一间不存在的屋子跑完了一次。
-      if (!alive) {
+      // 屋子已经没了（被解散、或镜像那边收到解散），或者用户按了「停下这一轮」：
+      // 这两种都不是它回不上来。既不该在屋里留一条红色占位，也不该把这个 agent 记成
+      // 「上次失败」—— 那会让人以为是自己这边的模型坏了。
+      if (!alive || isCancelled(error)) {
         log('turn_abandoned', { roomId, botId, error })
         return
       }
@@ -169,7 +182,9 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
         })
       })
     } finally {
-      aborts.delete(roomId)
+      // 只清自己那一个：用户停下之后紧接着开的新一轮有它自己的 controller，
+      // 旧回合收尾时不能把新回合的「停」按钮弄哑。
+      if (aborts.get(roomId) === controller) aborts.delete(roomId)
       const speaking = store.inspect((state) => getRoom(state, roomId)?.activity?.speaking ?? [])
       const rest = speaking.filter((name) => name !== bot.name)
       if (rest.length) setActivity(roomId, { speaking: rest })
@@ -292,7 +307,17 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
       try {
         for (const [index, member] of queue.entries()) {
           if (budget.left <= 0) break
-          await speakOne({ roomId, botId: member.id, at: index === 0 ? kind : 'round', depth: 0, budget, spoke })
+          // 「停下这一轮」是停整轮，不是只停当前这个：epoch 不在了就别再叫下一个人。
+          if (epochs.get(roomId) !== token) break
+          await speakOne({
+            roomId,
+            botId: member.id,
+            at: index === 0 ? kind : 'round',
+            depth: 0,
+            budget,
+            spoke,
+            token,
+          })
         }
       } finally {
         settle(roomId, { drain: true, token })
