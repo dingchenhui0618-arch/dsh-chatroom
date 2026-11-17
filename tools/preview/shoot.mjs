@@ -155,6 +155,15 @@ const shots = [
     verify: 'history',
     caption: '说满 200 句之后：更早的话还能一句一句翻回来，而不是只剩一句「只显示最近 200 条」',
   },
+  {
+    name: 'history-live',
+    view: 'panel',
+    setup: '/preview/history-live',
+    waitFor: '.cr-older-btn',
+    before: 'history-live-top',
+    verify: 'history-live',
+    caption: '翻着历史时屋里又进来话：出口上写清「几条新的」，人没被拽到底部，投影滑动留下的那道接缝也补上了',
+  },
 ]
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -276,6 +285,42 @@ async function closedPort() {
   const port = probe.address().port
   await new Promise((resolve) => probe.close(resolve))
   return port
+}
+
+/**
+ * 从页面里直接走命令通道发几句话进当前屋子。
+ *
+ * 用的是界面自己那条 `/api/dsh.chatroom/<端点>`（信封、Cookie 都一样），所以宿主真落库、
+ * 长轮询真把新投影推回页面 —— 用来把「人翻着历史时屋里又进来话」这个中间态做出来，
+ * 而不是往界面里塞假数据。
+ */
+async function sayInRoom(cdp, sessionId, texts) {
+  const answer = await evaluate(
+    cdp,
+    sessionId,
+    `(async () => {
+      const call = (method, payload, rpcId) =>
+        fetch('/api/dsh.chatroom/' + method, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ type: 'client-request', rpcId: rpcId, method: 'dsh.chatroom/' + method, payload: payload }),
+        }).then((res) => res.json())
+      const snapshot = await call('snapshot', {}, 'say-snapshot')
+      const roomId = snapshot.result.value.activeRoomId
+      const lines = ${JSON.stringify(texts)}
+      const sent = []
+      for (let i = 0; i < lines.length; i += 1) {
+        const result = await call('command', { action: 'msg.send', input: { roomId: roomId, text: lines[i], mentions: [], opKey: 'say_' + i } }, 'say-' + i)
+        sent.push(result.result && result.result.ok ? 'ok' : JSON.stringify(result.result && result.result.error))
+      }
+      return { roomId: roomId, sent: sent }
+    })()`,
+  )
+  if (!answer || !answer.roomId) throw new Error('那几句没发进去')
+  const failed = answer.sent.find((row) => row !== 'ok')
+  if (failed) throw new Error(`发消息被宿主打回来了：${failed}`)
+  return answer
 }
 
 async function attemptFailingJoin(cdp, sessionId) {
@@ -453,6 +498,51 @@ try {
       )
       if (!atTop) throw new Error('找不到消息区，滚不到顶部')
       await sleep(200)
+    }
+    // 「翻着历史时来了新消息」那一屏：先翻出一整段历史、滚到顶上（人停在上面读），
+    // 再让屋里真的进来两句 —— 拍的是「新消息已经进来、人还没动」的那一刻，不是操作前的样子。
+    if (shot.before === 'history-live-top') {
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-older-btn').click()`)
+      let paged = 0
+      for (let i = 0; i < 80; i += 1) {
+        paged = await evaluate(cdp, sessionId, `document.querySelectorAll('.cr-msg').length`)
+        if (paged >= 240) break
+        await sleep(100)
+      }
+      if (paged < 240) throw new Error(`翻不出一整段历史：${paged} 条`)
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const flow = document.querySelector('.cr-flow')
+          if (!flow) return false
+          flow.scrollTop = 0
+          flow.dispatchEvent(new Event('scroll'))
+          return true
+        })()`,
+      )
+      await sleep(200)
+      await sayInRoom(cdp, sessionId, ['这两句是翻着历史时进来的', '第二句也一样'])
+      let label = null
+      for (let i = 0; i < 80; i += 1) {
+        label = await evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const node = document.querySelector('.cr-jump')
+            return {
+              text: node ? String(node.textContent).trim() : null,
+              rows: document.querySelectorAll('.cr-msg').length,
+            }
+          })()`,
+        )
+        if (label && label.rows === 242 && /条新的/.test(label.text || '')) break
+        await sleep(100)
+      }
+      if (!label || label.rows !== 242 || !/2 条新的/.test(label.text || '')) {
+        throw new Error(`拍之前那个状态没做出来：${JSON.stringify(label)}`)
+      }
+      await sleep(250)
     }
     // 截图要截「稳定下来的界面」，不是「刚好路过的中间态」：三台机器那张图里，
     // 远程 agent 的回复会在页面加载之后才落库，未读徽标会在面板可见的情况下
@@ -1330,32 +1420,7 @@ try {
       if (/条新的/.test(parked.jump)) throw new Error(`还没人说话，出口就报数了：${parked.jump}`)
 
       // 走页面自己的命令通道（和界面发消息同一条路），宿主真落库、长轮询真推回来。
-      const liveRoom = await evaluate(
-        cdp,
-        sessionId,
-        `(async () => {
-          const call = (method, payload, rpcId) =>
-            fetch('/api/dsh.chatroom/' + method, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              credentials: 'same-origin',
-              body: JSON.stringify({ type: 'client-request', rpcId: rpcId, method: 'dsh.chatroom/' + method, payload: payload }),
-            }).then((res) => res.json())
-          const snapshot = await call('snapshot', {}, 'live-snapshot')
-          const roomId = snapshot.result.value.activeRoomId
-          const texts = ['这两句是翻着历史时进来的', '第二句也一样']
-          const sent = []
-          for (let i = 0; i < texts.length; i += 1) {
-            const answer = await call('command', { action: 'msg.send', input: { roomId: roomId, text: texts[i], mentions: [], opKey: 'live_' + i } }, 'live-' + i)
-            sent.push(answer.result && answer.result.ok ? 'ok' : JSON.stringify(answer.result && answer.result.error))
-          }
-          return { roomId: roomId, sent: sent }
-        })()`,
-      )
-      if (!liveRoom || !liveRoom.roomId) throw new Error('那两句没发进去')
-      if (liveRoom.sent.some((row) => row !== 'ok')) {
-        throw new Error(`发消息被宿主打回来了：${JSON.stringify(liveRoom)}`)
-      }
+      const liveRoom = await sayInRoom(cdp, sessionId, ['这两句是翻着历史时进来的', '第二句也一样'])
       let live = null
       for (let i = 0; i < 80; i += 1) {
         live = await readTimeline()
@@ -1372,6 +1437,45 @@ try {
       let cleared = null
       for (let i = 0; i < 40; i += 1) {
         cleared = await readTimeline()
+        if (cleared.jump === null) break
+        await sleep(100)
+      }
+      if (cleared.jump !== null) throw new Error('点过之后出口还挂着')
+      if (!(cleared.gap <= 2)) throw new Error(`点了「回到最新」却没到底：还差 ${cleared.gap}px`)
+      console.log(`verified — 点一下回到最新，计数自己消失（离底部 ${cleared.gap}px）`)
+    }
+
+    // 「翻着历史时屋里又进来话」这一屏：出口记数、人没被拽走、接缝补上；
+    // 点一下回到最新、计数清零。断言的是截图里那个冻结状态本身。
+    if (wants(shot, 'history-live')) {
+      const readLive = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const flow = document.querySelector('.cr-flow')
+            const jump = document.querySelector('.cr-jump')
+            const rows = [...document.querySelectorAll('.cr-msg')]
+            return {
+              rows: rows.length,
+              jump: jump ? String(jump.textContent).trim() : null,
+              gap: flow ? Math.round(flow.scrollHeight - flow.scrollTop - flow.clientHeight) : null,
+              last: rows.length ? String(rows[rows.length - 1].querySelector('.cr-msg-text').textContent).trim() : '',
+              error: document.querySelector('.cr-error-bar') ? String(document.querySelector('.cr-error-bar').textContent).trim() : null,
+            }
+          })()`,
+        )
+      const live = await readLive()
+      if (live.error) throw new Error(`这一屏报错了：${live.error}`)
+      if (!live.jump || !/回到最新 · 2 条新的/.test(live.jump)) throw new Error(`出口没写清几条新的：${live.jump}`)
+      if (live.rows !== 242) throw new Error(`时间线该是 242 条（240 + 新来的两句），实际 ${live.rows}`)
+      if (live.last !== '第二句也一样') throw new Error(`最新那句不对：${live.last}`)
+      if (!(live.gap > 200)) throw new Error(`这张图该是「人停在上头」：离底部只有 ${live.gap}px`)
+      console.log(`verified — 翻着历史时进来的两句记在出口上：${live.jump}（${live.rows} 条，离底部 ${live.gap}px）`)
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-jump').click()`)
+      let cleared = null
+      for (let i = 0; i < 40; i += 1) {
+        cleared = await readLive()
         if (cleared.jump === null) break
         await sleep(100)
       }

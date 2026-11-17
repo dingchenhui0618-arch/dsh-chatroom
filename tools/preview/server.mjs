@@ -153,6 +153,15 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 同一间屋子，但人停在上头读历史时屋里又进来两句 —— 出口上要写清「几条新的」。
+      if (url.pathname === '/preview/history-live') {
+        usage.writes += 1
+        await host.history('季度对账存档（翻着看时来了新消息）', '三个月的对账记录：人停在上头，屋里又进来话')
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+
       if (nudge && url.pathname === '/preview/nudge') {
         usage.writes += 1
         nudge()

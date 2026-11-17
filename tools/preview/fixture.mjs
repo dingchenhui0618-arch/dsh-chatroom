@@ -300,15 +300,20 @@ export async function bootFixture({ port } = {}) {
      * 说满 200 句之后那些话必须还能翻回去，不能只剩一句「只显示最近 200 条」。
      * 单独开一间屋子，别把主线那几张图里的对话冲掉。
      */
-    async history() {
-      const stale = side.snapshot().rooms.find((row) => row.name === '尾款对账')
-      if (stale) await side.command({ action: 'room.dissolve', input: { roomId: stale.id } })
+    async history(name = '季度对账存档', topic = '三个月的对账记录：往前翻得回去') {
+      // 把前面几屏留下的屋子清掉（no-reply 那间），否则这一屏的侧栏里会多出别的地方来的房间；
+      // 同一间屋子再要一次时也先拆掉，别在列表里留两份同名的。
+      for (const row of side.snapshot().rooms) {
+        if (row.name === '尾款对账' || row.name === name) {
+          await side.command({ action: 'room.dissolve', input: { roomId: row.id } })
+        }
+      }
       const created = await side.command({
         action: 'room.create',
-        input: { name: '季度对账存档', topic: '三个月的对账记录：往前翻得回去' },
+        input: { name: name, topic: topic },
       })
-      const target = created.rooms.find((row) => row.name === '季度对账存档')
-      if (!target) throw new Error('没能开出「季度对账存档」这间屋子')
+      const target = created.rooms.find((row) => row.name === name)
+      if (!target) throw new Error(`没能开出「${name}」这间屋子`)
       await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_cashflow' } })
       await side.command({ action: 'member.addBot', input: { roomId: target.id, botId: 'bot_returns' } })
       // 直接落库：这一屏演的是「这三个月的 240 句还在」，不是「现场再聊 240 句」。
