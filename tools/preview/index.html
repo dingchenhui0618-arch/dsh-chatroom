@@ -21,6 +21,7 @@
     --dsw-alias-label-primary: #f9fafb;
     --dsw-alias-label-secondary: #cfd3d6;
     --dsw-alias-border-l1: #ffffff0f;
+    --dsw-alias-bg-base: #151517;
     --dsw-alias-bg-layer-2: #2c2c2e;
     --dsw-alias-brand-primary: #f9fafb;
   }
@@ -47,6 +48,9 @@
     align-items: center;
     padding: 8px 0 8px;
     gap: 8px;
+    /* 钉进自己的一层：不这样的话这块圆角图标在两次截图之间会落在半像素上，
+       抗锯齿边缘差 1–6/255，重跑比对就不是逐字节相同了（实测踩过）。 */
+    transform: translateZ(0);
   }
   .mark {
     width: 28px;

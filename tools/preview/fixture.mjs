@@ -189,7 +189,7 @@ async function bootSide({ dir, reply, port }) {
 }
 
 /** 宿主：本机房间 + 两个本地 agent，然后等另一台机器加入。 */
-export async function bootFixture({ port } = {}) {
+export async function bootFixture({ port, empty = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-preview-'))
   // 假模型可以被点名挂一次：「agent 没回上来」那一屏要的是真实失败路径，
   // 不是给页面塞一条假消息。挂完自动恢复，重试才有的可重。
@@ -205,6 +205,12 @@ export async function bootFixture({ port } = {}) {
       return '45 天账期下缺口 82 万，集中在第二周；把两笔大额应付款挪到 11/03 能降到 31 万。'
     },
   })
+  // 「刚装好、一间屋子都还没有」那一屏：一间屋子都不建，界面走的是真实的空状态分支。
+  // 不是给页面塞一份空快照 —— 状态机、快照、订阅都还是真的，只是它现在确实是空的。
+  if (empty) {
+    pinTimes(side.store)
+    return { ...side, dir, empty: true, roomId: null, code: null, lanPort: side.lan.status().port }
+  }
   const room = seedHost(side.store)
   pinTimes(side.store)
   return {

@@ -19,6 +19,7 @@ const outDir = join(root, 'docs')
 const port = Number(process.env.PREVIEW_PORT ?? 3491)
 const guestPort = Number(process.env.PREVIEW_GUEST_PORT ?? port + 1)
 const cdpPort = Number(process.env.PREVIEW_CDP_PORT ?? 9333)
+const emptyPort = Number(process.env.PREVIEW_EMPTY_PORT ?? port + 10)
 
 const CHROME = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -32,6 +33,16 @@ if (!CHROME) throw new Error('找不到 Chrome 可执行文件')
 const wants = (shot, name) => (Array.isArray(shot.verify) ? shot.verify.includes(name) : shot.verify === name)
 
 const shots = [
+  {
+    name: 'empty',
+    // 这一屏要的是一台「刚装好、一间屋子都还没有」的服务：主服务里房间早就种好了，
+    // 拿它截不出空状态。脚本自己按需起一台，截完就关（见 startEmptyServer）。
+    server: 'empty',
+    view: 'panel',
+    waitFor: '.cr-first',
+    verify: 'first-run',
+    caption: '刚装好、还没有房间时的第一屏：房间在自己机器上、另一台机器怎么进来，两个入口当场可用 —— 不是一块空白',
+  },
   {
     name: 'panel',
     view: 'panel',
@@ -410,6 +421,49 @@ async function assertFreshServer() {
 const fresh = await assertFreshServer()
 console.log(`preview server fresh — room code ${fresh.roomCode}, LAN port ${fresh.lanPort}`)
 
+/**
+ * 起一台只演「一间屋子都还没有」的预览服务。
+ *
+ * 复用同一个 server.mjs（真状态机、真快照），只是不种房间、不拉第二台机器加入；
+ * 端口另开，退出时杀掉 —— 不会碰你自己已经跑起来的那台。
+ */
+async function startEmptyServer() {
+  const proc = spawn(process.execPath, [join(here, 'server.mjs')], {
+    env: {
+      ...process.env,
+      PREVIEW_EMPTY: '1',
+      PREVIEW_PORT: String(emptyPort),
+      PREVIEW_GUEST_PORT: String(emptyPort + 1),
+      // 空状态那张图里没有任何局域网内容，端口交给系统挑，免得和正在跑的那台撞上。
+      PREVIEW_LAN_PORT: '0',
+    },
+    stdio: 'ignore',
+  })
+  let lastError = null
+  for (let i = 0; i < 120; i += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${emptyPort}/preview/writes`)
+      if (response.ok) {
+        const info = await response.json()
+        if (info.empty !== true) throw Object.assign(new Error('这台预览服务不是空状态模式'), { fatal: true })
+        if (Number(info.writes) > 0) {
+          throw Object.assign(new Error(`空状态预览服务已经被写过 ${info.writes} 次`), { fatal: true })
+        }
+        return proc
+      }
+    } catch (error) {
+      if (error?.fatal) {
+        proc.kill()
+        throw error
+      }
+      lastError = error
+    }
+    await sleep(250)
+  }
+  proc.kill()
+  throw new Error(`空状态预览服务没起来：端口 ${emptyPort}（${String(lastError?.message ?? '')}）`)
+}
+
 const profileDir = await mkdtemp(join(tmpdir(), 'chatroom-shot-'))
 const chrome = spawn(
   CHROME,
@@ -428,6 +482,9 @@ const chrome = spawn(
   { stdio: 'ignore' },
 )
 
+// 空状态那一屏自己起的那台服务；截完在 finally 里关掉。
+let emptyProc = null
+
 try {
   const version = await waitForJson(`http://127.0.0.1:${cdpPort}/json/version`)
   const cdp = await Cdp.connect(version.webSocketDebuggerUrl)
@@ -444,6 +501,11 @@ try {
     // 有的状态得先把屋子演进到那一步（例如宿主解散）再截，不能靠假数据摆拍。
     // 这类准备动作作用在宿主那份状态机上，所以固定走宿主端口。
     if (shot.setup) await fetch(`http://127.0.0.1:${port}${shot.setup}`)
+    let shotPort = shot.port ?? port
+    if (shot.server === 'empty') {
+      if (!emptyProc) emptyProc = await startEmptyServer()
+      shotPort = emptyPort
+    }
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
     const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
     await cdp.send('Emulation.setDeviceMetricsOverride', {
@@ -454,10 +516,10 @@ try {
     }, sessionId)
     await cdp.send('Page.enable', {}, sessionId)
     await cdp.send('Runtime.enable', {}, sessionId)
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${shot.port ?? port}/?view=${shot.view}` }, sessionId)
+    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${shotPort}/?view=${shot.view}` }, sessionId)
     await waitForSelector(cdp, sessionId, shot.waitFor)
     if (shot.nudge) {
-      await fetch(`http://127.0.0.1:${shot.port ?? port}/preview/nudge`)
+      await fetch(`http://127.0.0.1:${shotPort}/preview/nudge`)
       await waitForSelector(cdp, sessionId, shot.waitForAfter)
     }
     if (shot.open) {
@@ -564,10 +626,152 @@ try {
     await writeFile(file, Buffer.from(data, 'base64'))
     console.log(`saved ${file} — ${shot.caption}`)
 
+    // 首屏：一间屋子都还没有的时候，这是新装的人看到的第一屏。
+    // 只留一句提示会让中栏、右栏各空一大块，看起来像界面挂了 —— 所以这里既量版面，
+    // 也真去点那两个入口：它们必须真的把表单开出来，而不是长在图上好看的按钮。
+    if (wants(shot, 'first-run')) {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          const box = (node) => {
+            if (!node) return null
+            const rect = node.getBoundingClientRect()
+            return {
+              left: Math.round(rect.left),
+              top: Math.round(rect.top),
+              right: Math.round(rect.right),
+              bottom: Math.round(rect.bottom),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            }
+          }
+          const grid = document.querySelector('.cr-grid')
+          const columns = [...document.querySelectorAll('.cr-grid > .cr-col')]
+          return {
+            rooms: document.querySelectorAll('.cr-room').length,
+            columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length : 0,
+            title: text(document.querySelector('.cr-first-title')),
+            body: text(document.querySelector('.cr-first-text')),
+            note: text(document.querySelector('.cr-first-note')),
+            buttons: [...document.querySelectorAll('.cr-first button')].map((node) => ({
+              label: text(node),
+              box: box(node),
+            })),
+            inner: box(document.querySelector('.cr-first-inner')),
+            list: box(columns[0] || null),
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+            overflowX: document.documentElement.scrollWidth - window.innerWidth,
+          }
+        })()`,
+      )
+      if (state.rooms !== 0) throw new Error(`这一屏该是「一间屋子都没有」，实际有 ${state.rooms} 间`)
+      if (state.columns !== 2) {
+        throw new Error(`没有房间时不该留第三列（成员列）撑着：实际 ${state.columns} 列`)
+      }
+      const labels = state.buttons.map((row) => row.label)
+      if (labels.join('|') !== '新建房间|加入 LAN 房间') {
+        throw new Error(`首屏的两个入口不对：${JSON.stringify(labels)}`)
+      }
+      for (const key of ['title', 'body', 'note']) {
+        if (!state[key]) throw new Error(`首屏少了 ${key}：${JSON.stringify(state[key])}`)
+      }
+      if (!/六位房间码/.test(state.body)) throw new Error(`首屏没说清另一台机器怎么进来：${state.body}`)
+      if (!/agent/.test(state.body)) throw new Error(`首屏没说清这屋子是给 agent 说话用的：${state.body}`)
+      if (!/规则/.test(state.note)) throw new Error(`首屏没交代发言预算在哪定：${state.note}`)
+      if (/undefined|null|NaN/.test(state.title + state.body + state.note)) {
+        throw new Error('首屏文案里有没填上的占位')
+      }
+      // 版面：说明块不越过左栏、不超出视口、按钮够大够点。
+      if (!state.inner) throw new Error('首屏的说明块没渲染出来')
+      if (state.inner.width > 460) throw new Error(`首屏说明块太宽：${state.inner.width}px`)
+      if (state.list && state.inner.left < state.list.right - 2) {
+        throw new Error(`首屏说明块压到左栏上了：说明块 ${state.inner.left} / 左栏右边界 ${state.list.right}`)
+      }
+      if (state.inner.top < 0 || state.inner.bottom > state.viewport.height) {
+        throw new Error(`首屏说明块超出视口：${JSON.stringify(state.inner)}`)
+      }
+      if (state.overflowX > 0) throw new Error(`这一屏横向溢出了 ${state.overflowX}px`)
+      for (const row of state.buttons) {
+        if (!row.box || row.box.height < 24) {
+          throw new Error(`入口「${row.label}」太矮，点不动：${JSON.stringify(row.box)}`)
+        }
+        if (row.box.width < 64) throw new Error(`入口「${row.label}」太窄：${row.box.width}px`)
+        if (row.box.right > state.viewport.width || row.box.bottom > state.viewport.height) {
+          throw new Error(`入口「${row.label}」跑到视口外：${JSON.stringify(row.box)}`)
+        }
+      }
+
+      const clickIn = async (scope, label) => {
+        const clicked = await evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const root = document.querySelector(${JSON.stringify(scope)})
+            if (!root) return false
+            const node = [...root.querySelectorAll('button')].find((el) => el.textContent.trim() === ${JSON.stringify(label)})
+            if (!node) return false
+            node.click()
+            return true
+          })()`,
+        )
+        if (!clicked) throw new Error(`${scope} 里点不到「${label}」`)
+        await sleep(250)
+      }
+
+      // 入口 1：新建房间 —— 真的把左栏的新建表单开出来。
+      await clickIn('.cr-first', '新建房间')
+      const creating = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const form = document.querySelector('.cr-form')
+          if (!form) return { form: false }
+          const inputs = [...form.querySelectorAll('input.cr-field')]
+          const labels = [...form.querySelectorAll('button')].map((node) => String(node.textContent).trim())
+          return {
+            form: true,
+            inputs: inputs.length,
+            placeholders: inputs.map((el) => el.getAttribute('placeholder') || ''),
+            labels,
+          }
+        })()`,
+      )
+      if (!creating.form || creating.inputs !== 2) {
+        throw new Error(`首屏点「新建房间」没把表单开出来：${JSON.stringify(creating)}`)
+      }
+      if (!creating.labels.includes('建好')) throw new Error(`新建表单里没有「建好」：${JSON.stringify(creating.labels)}`)
+      await clickIn('.cr-form', '取消')
+
+      // 入口 2：加入 LAN 房间 —— 真的是地址 + 六位房间码那张表单，不是另一张。
+      await clickIn('.cr-first', '加入 LAN 房间')
+      const joining = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const inputs = [...document.querySelectorAll('input.cr-field')]
+          const join = [...document.querySelectorAll('button')].find((el) => el.textContent.trim() === '加入')
+          return {
+            inputs: inputs.length,
+            placeholders: inputs.map((el) => el.getAttribute('placeholder') || ''),
+            join: Boolean(join),
+          }
+        })()`,
+      )
+      if (!joining.inputs || !joining.join) throw new Error(`首屏点「加入 LAN 房间」没把加入表单开出来：${JSON.stringify(joining)}`)
+      if (!joining.placeholders.some((row) => /地址/.test(row))) throw new Error(`加入表单缺地址一栏：${JSON.stringify(joining.placeholders)}`)
+      if (!joining.placeholders.some((row) => /房间码/.test(row))) throw new Error(`加入表单缺房间码一栏：${JSON.stringify(joining.placeholders)}`)
+      await clickIn('.cr-col', '取消')
+      const back = await evaluate(cdp, sessionId, `Boolean(document.querySelector('.cr-first'))`)
+      if (!back) throw new Error('两张表单取消之后首屏自己没了')
+      console.log(`verified — 首屏：2 列（不留空成员列）、${state.title}；两个入口都真的开出表单（新建 / 地址+房间码）`)
+    }
+
     // 反面：面板就摆在眼前时，新消息应该直接算已读（用户已经看到了）。
     // 和上面那条一起，才说明「该提醒时提醒、看过了就消」两半都在。
     if (wants(shot, 'panel-read')) {
-      await fetch(`http://127.0.0.1:${shot.port ?? port}/preview/nudge`)
+      await fetch(`http://127.0.0.1:${shotPort}/preview/nudge`)
       let cleared = false
       for (let i = 0; i < 40; i += 1) {
         const state = await evaluate(
@@ -1489,4 +1693,5 @@ try {
   cdp.close()
 } finally {
   chrome.kill()
+  if (emptyProc) emptyProc.kill()
 }

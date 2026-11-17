@@ -28,15 +28,19 @@ const wantedLanPort = Number(process.env.PREVIEW_LAN_PORT ?? 4455)
 // 状态一旦被上一轮补过消息或解散过，再截出来的图就不是 docs/ 里那些了。
 const usage = { writes: 0 }
 
+// 空状态那一屏要的是「刚装好、一间屋子都还没有」：这台预览服务只服务那一张图，
+// 所以不种房间、不拉第二台机器加入，也不做热身。
+const emptyMode = process.env.PREVIEW_EMPTY === '1'
+
 let host
 try {
-  host = await bootFixture({ port: wantedLanPort })
+  host = await bootFixture({ port: wantedLanPort, empty: emptyMode })
 } catch (error) {
   console.warn(`[chatroom-preview] 固定端口 ${wantedLanPort} 起不来，改用系统挑的端口：${error?.message ?? error}`)
-  host = await bootFixture({ port: 0 })
+  host = await bootFixture({ port: 0, empty: emptyMode })
 }
-const guest = await bootGuest({ port: host.lanPort, code: host.code })
-await warmUp(host, guest)
+const guest = emptyMode ? null : await bootGuest({ port: host.lanPort, code: host.code })
+if (guest) await warmUp(host, guest)
 // 第三台机器按需加入：前七张截图拍的是「两台机器」的样子，多一台会改掉它们的内容。
 let third = null
 async function joinThird() {
@@ -44,7 +48,11 @@ async function joinThird() {
   third = await joinThirdMachine(host)
   return third
 }
-console.log(`preview host room ${host.code} on LAN port ${host.lanPort}`)
+console.log(
+  emptyMode
+    ? `preview host (empty state, no rooms) on LAN port ${host.lanPort}`
+    : `preview host room ${host.code} on LAN port ${host.lanPort}`,
+)
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -115,7 +123,7 @@ function serve(side, port, { nudge = null } = {}) {
 
       if (url.pathname === '/preview/writes') {
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ writes: usage.writes, roomCode: host.code, lanPort: host.lanPort, third: Boolean(third) }))
+        res.end(JSON.stringify({ writes: usage.writes, roomCode: host.code, lanPort: host.lanPort, third: Boolean(third), empty: emptyMode }))
         return
       }
 
@@ -250,5 +258,5 @@ function serve(side, port, { nudge = null } = {}) {
   return server
 }
 
-serve(host, hostPort, { nudge: () => host.nudge() })
-serve(guest, guestPort)
+serve(host, hostPort, emptyMode ? {} : { nudge: () => host.nudge() })
+if (guest) serve(guest, guestPort)
