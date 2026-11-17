@@ -116,6 +116,12 @@ node tools/lan-check.mjs host --port 4399
 node tools/lan-check.mjs guest --host 10.0.51.18:4399 --code K7M2QD
 ```
 
+Windows 上连不上，先看入站防火墙（只开这一个端口，管理员 PowerShell）：
+
+```powershell
+New-NetFirewallRule -DisplayName "dsh-chatroom" -Direction Inbound -Protocol TCP -LocalPort 4399 -Action Allow
+```
+
 ## 安装
 
 ```bash
@@ -126,8 +132,9 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 侧栏出现「聊天室」。装好后插件会自动在 `4399` 监听（可用环境变量 `DSH_CHATROOM_PORT` 改）；
 端口被占不会影响本机房间，只是「邀请」里会写清原因。
 
-包清单里带了 `icon.svg` 和 `locale/{zh,en}.json`，所以插件管理页显示的是它自己的图标和
-中英文标题/描述，不是默认图 + 英文包名（`test/manifest.test.mjs` 盯着这条不过期）。
+包清单里带了 `icon.svg` 和 `locale/{zh,en}.json`。DSH 的插件元数据规则认这两处
+（`icon` 字段或 `./icon` 导出、`./locale/*.json` 导出）：缺了它们，插件管理页只能显示默认图 +
+英文包名，这三样以前一样都没有。`test/manifest.test.mjs` 盯着这条不过期。
 
 ## 用法
 
