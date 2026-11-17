@@ -318,9 +318,21 @@ New-NetFirewallRule -DisplayName "dsh-chatroom" -Direction Inbound -Protocol TCP
 
 ## 安装
 
+插件市场那条条目给出的命令就是 `github:` spec，装到哪个 profile 就把 `--profile` 换成它：
+
+```bash
+dsh plugin --profile <你的profile> add github:dingchenhui0618-arch/dsh-chatroom
+```
+
+本机已经有这个仓库的目录时，也可以直接装目录：
+
 ```bash
 dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ```
+
+`github:` 这条 spec 我拿 `npm install github:dingchenhui0618-arch/dsh-chatroom` 在空目录里验过一遍：
+装出来的包 `import('dsh-chatroom')` 直接拿得到 `name` / `inject` / `apply` —— 仓库里已经提交了
+`lib/index.js` 与 `lib/client.js`，不需要先在本机构建。
 
 或者用插件管理器装本地目录（`install_bundle`，target 指向包目录）。装完刷新页面，
 侧栏出现「聊天室」。装好后插件会自动在 `4399` 监听（可用环境变量 `DSH_CHATROOM_PORT` 改）；
