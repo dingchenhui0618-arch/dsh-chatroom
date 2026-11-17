@@ -87,7 +87,9 @@
 `阿青的 Surface / 旧版本，报不了 agent 名单 —— 重启那台的桌面端，再进屋一次`。
 两种「没 agent」分得开：版本旧是警示色、要重启；那台还没建则是「去它的左栏建一个，建完自动进来」。
 反向也一样：加入方撞上旧版本宿主时，右栏会写明「宿主的插件是旧版本，agent 名单报不过去」。
-这不是网络故障，重试没用 —— 只有重启那台的桌面端才能换掉正在跑的代码。
+这不是网络故障，重试没用 —— 已经跑着的进程里是**装载那一刻**的代码，得让它重新装载：
+重启那台的桌面端，或者在设置 → 插件里把 `dsh-chatroom` 关掉再打开（实测宿主半边会重新求值，
+见下面探针那节）。
 
 ![agent 没回上来时可以只重试它一个](docs/retry.png)
 
@@ -174,9 +176,10 @@ token 烧光的唯一闸门。
 所以**加入之后再建也来得及** —— 建完立刻报给宿主，对面成员列当场多一个人，不用退出来重进。
 只是名字/职责改了、或者删掉了一个，同样会同步过去（历史消息保留当时的署名）。
 
-**两台机器都得出自重启过的那一版**：补报名单用的是新接口（`/lan/agents`）。
+**两台机器都得让进程装载过新代码**：补报名单用的是新接口（`/lan/agents`）。
 只刷新页面换的只是界面，宿主那半边还是旧代码 —— 所以装完/更新完插件要**重启桌面端**，
-两边都是。哪台没重启，界面会直说（见上一节那张图），不用靠试。
+或者在设置 → 插件里把 `dsh-chatroom` 关掉再打开，两边都是。哪台没换过来，界面会直说
+（见上一节那张图），不用靠试。
 
 进来之后：
 
@@ -216,6 +219,13 @@ curl -s http://10.0.51.18:4399/lan/ping
 是一份拷贝或 junction，改了文件不等于跑着的进程换了代码 —— 这一条能把「没修好」和
 「修了但没生效」分开。探针**每次都重新看磁盘**（不是拿装载那一刻的快照）：
 刚装好时是 `false`，改了文件再探一次就翻成 `true`，恢复文件时间又落回 `false`。
+
+`stale: true` 之后怎么让它重新装载：**设置 → 插件里把 `dsh-chatroom` 关掉再打开**即可，
+不用重启整个桌面端（实测：关掉后 4399 立刻关闭；再打开 `loadedAt` 变成那一刻、`stale`
+回到 `false`，`shell.overlay` 里的 `chatroom-float` 也重新注册成 active）。这是拿真实
+profile 验的：那个进程从 17:28 一直跑着，磁盘上 18:16 之后修的东西一件都没进去 —— 而它
+自己那份探针还是旧的、只会报装载那一刻的快照，所以看起来一切正常；换成当前代码后，
+改一个文件再探立刻翻成 `stale: true`，重新装载又回到 `false`。
 
 想先验网络通不通（防火墙、网段、房间码），用自检脚本，不烧 token：
 
@@ -317,6 +327,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **版本不一致分得清**（旧版本那台进屋时带不了 agent：宿主看得出它「报不了名单」，而不是以为「它没建」） | ✅ 已验证（真 HTTP） | `test/lan-agents.test.mjs` 第 5 条：按老协议手写 `POST /lan/join`（不带 `build` 能力位）→ 宿主 `lan.peers` 里那台 `canAgents === false`、`agents` 为空；同一间屋里新版本加入方是 `true`。反证在界面上：`verify: 'old-peer'` 断言成员列下方出现警示行、含「旧版本」与「重启」 |
 | **加入方撞上旧版本宿主**（没有 `/lan/agents`：不炸、不把 404 当网络故障反复重试） | ✅ 已验证（真 HTTP） | 同上第 6 条：用一个只对 `/lan/agents` 回 404 的代理当「旧宿主」，加入方 `bot.create` 后 `links[0].hostOld === true`、本机 agent 照建、宿主那边成员一个没多 |
 | **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 3 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true；探针 `codeStatus()` **每次都重读磁盘**（拷一份到临时目录改 mtime，不重新装载也当场翻成过期，静态快照不动）。`/lan/ping` 一并带出 `version` / `loadedAt` / `newestMtime` / `stale`，真实 HTTP 上验过 false→true→false |
+| **装了新版怎么让跑着的进程换代码**（不重启桌面端） | ✅ 已验证（真实 profile） | 在设置 → 插件里把 `dsh-chatroom` 关掉再打开：4399 立刻关闭 → 再打开后 `/lan/ping` 的 `loadedAt` 变成那一刻（`11:09:27Z`）、`newestMtime` 是磁盘上最新的改动、`stale: false`；`shell.overlay` 里 `chatroom-float` 重新注册成 active。改一个文件再探翻成 `stale: true`（`11:09:06Z`），重新装载一次又回到 `false` |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
 | **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
