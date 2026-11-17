@@ -53,9 +53,28 @@ const newestMtime = newestHostMtime()
 /** 留 1s 余量：装载跟不上文件写入的那一瞬间不该被当成「磁盘上更新」。 */
 const stale = Boolean(newestMtime) && Date.parse(newestMtime) > Date.parse(loadedAt) + 1000
 
+/** 进进程那一刻的快照：装载时间、当时的版本、当时看到的磁盘状态。 */
 export const code = Object.freeze({
   version: readVersion(),
   loadedAt,
   newestMtime,
   stale,
 })
+
+/**
+ * 现在再看一眼磁盘：**装载之后**又改过文件的话，这里会翻成 stale。
+ *
+ * 为什么不能只留上面那份快照：`/lan/ping` 要回答的是「我磁盘上这份改了，跑着的进程换了没有」。
+ * 快照是装载那一刻拍的，之后再改文件它永远说「没变」—— 实测就踩过：宿主的文件时间戳
+ * 明明比 loadedAt 新，探针却还报 stale:false，于是「改了没生效」看起来像「没改」。
+ * 这个函数每次调用都重新读一遍 mtime，代价是十来个 stat，只给探针用。
+ */
+export function codeStatus() {
+  const newest = newestHostMtime()
+  return {
+    version: readVersion(),
+    loadedAt,
+    newestMtime: newest,
+    stale: Boolean(newest) && Date.parse(newest) > Date.parse(loadedAt) + 1000,
+  }
+}

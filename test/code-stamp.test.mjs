@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
+import { cp, mkdtemp, rm } from 'node:fs/promises'
 import { readFileSync, statSync, utimesSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { code } from '../src/host/code.js'
+import { code, codeStatus } from '../src/host/code.js'
 
 /**
  * 代码指纹的语义。
@@ -34,5 +38,32 @@ test('代码指纹：磁盘上出现比内存更新的文件时，自己会报�
     )
   } finally {
     utimesSync(target, before.atime, before.mtime)
+  }
+})
+
+test('代码指纹：探针每次重新看磁盘 —— 装载之后又改了文件，不重新装载也当场说过期', async () => {
+  // 拿装载那一刻的快照当答案是不够的：用户装完插件之后改文件、又不重启，
+  // 快照永远说「没变」，看起来就像「没改」、「没修好」。
+  // 这里拷一份到临时目录再动它的文件时间戳 —— 不动仓库里的文件，
+  // 免得和并行跑的其它用例抢同一个 mtime。
+  const dir = await mkdtemp(join(tmpdir(), 'chatroom-stamp-'))
+  try {
+    await cp(new URL('../src/host/', import.meta.url), join(dir, 'src', 'host'), { recursive: true })
+    await cp(new URL('../lib/index.js', import.meta.url), join(dir, 'lib', 'index.js'))
+    await cp(new URL('../package.json', import.meta.url), join(dir, 'package.json'))
+    const mod = await import(pathToFileURL(join(dir, 'src', 'host', 'code.js')).href)
+    assert.equal(mod.codeStatus().stale, false, '刚装载、磁盘也没再动时不该判成过期')
+
+    const target = join(dir, 'src', 'host', 'rooms.js')
+    const before = statSync(target)
+    const later = new Date(Date.now() + 120_000)
+    utimesSync(target, later, later)
+    assert.equal(mod.codeStatus().stale, true, '磁盘比装载时间新，探针必须当场翻成过期')
+    assert.equal(mod.code.stale, false, '静态快照是「进进程那一刻」的世界，它不该跟着变')
+
+    utimesSync(target, before.atime, before.mtime)
+    assert.equal(mod.codeStatus().stale, false, '恢复文件时间后判据也要落回去')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })

@@ -13,7 +13,7 @@ import {
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
 import { project } from './project.js'
-import { code } from './code.js'
+import { code, codeStatus } from './code.js'
 
 /**
  * LAN 宿主：这台机器上的房间让局域网里另一台机器加入。
@@ -594,7 +594,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
          * 恰恰只有**跑着的那台机器**知道。机器的名字本来就已经在这里报出去了，版本
          * 比它还不敏感，所以放这儿不额外扩大暴露面。
          */
-        value = { ok: true, hostMachine: machine, serving: Boolean(bound.port), code }
+        // 探针要答的是「我磁盘上这份改了、跑着的进程换了没有」：每次都重新看磁盘，
+        // 不能拿装载那一刻的快照 —— 那样改完之后它永远说没变。
+        value = { ok: true, hostMachine: machine, serving: Boolean(bound.port), code: codeStatus() }
       } else {
         response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
         response.end(JSON.stringify({ ok: false, error: { code: 'not_found', message: '没有这个端点。' } }))
