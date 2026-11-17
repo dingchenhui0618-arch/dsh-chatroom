@@ -82,7 +82,12 @@ token 烧光的唯一闸门。
   这才是「真人和他携带的 agent」；
 - 45 秒没有回音就落一条失败占位（`某某这次没回上来`），这一轮不会卡死；
 - 加入方的房间是**镜像**：规则、成员、解散都在宿主那台改，这边只能发言；
-  断线会自动重连，宿主重启后重新握手（旧凭据作废，不认旧身份）。
+- **宿主重启**后旧凭据作废：这边不用手动重连，下一次发言会自己重新握手 —— 并发也只握一次，
+  屋里不会因此冒出两个「我」；
+- **对面关掉窗口**：宿主不再收到轮询，掉线半分钟后把它的人和 agent 整组撤掉，
+  不留一条永远不回话的幽灵；正在长轮询、或正在跑模型的机器不算掉线，不会被误清；
+- **宿主把屋子解散了**：加入方这边留一条「已在宿主那台解散」的墓碑 —— 历史还能看、
+  输入框锁住、右栏「从列表移除」可以清掉。不会卡在一个发不出话也退不出的房间里。
 
 想先验网络通不通（防火墙、网段、房间码），用自检脚本，不烧 token：
 
@@ -129,8 +134,11 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 房间/成员/消息状态机 | ✅ 已验证 | `test/rooms.test.mjs` 13 用例 |
 | Host 端到端（建房间 → 加 agent → @ 它 → 它真的被驱动 → 回复按 seq 落库） | ✅ 已验证（假模型） | `test/host.integration.test.mjs` 7 用例 |
 | 三条规则调度 + 预算闸门 | ✅ 已验证 | 同上：@ 才回 / 全员一轮 / 未 @ 不白烧调用 |
-| LAN 全链路（加入 → 双向发言 → 派发远程 agent → 回传落库 → 离开） | ✅ 已验证（真 HTTP、假模型） | `test/lan.test.mjs` 4 用例：两个独立实例各起监听、互相走 `/lan/*` |
+| LAN 全链路（加入 → 双向发言 → 派发远程 agent → 回传落库 → 离开） | ✅ 已验证（真 HTTP、假模型） | `test/lan.test.mjs` 8 用例：两个独立实例各起监听、互相走 `/lan/*` |
 | LAN 失败路径（对面掉线 → 超时 → 失败占位）、门禁（无/错 peerId 403） | ✅ 已验证 | 同上 |
+| LAN 重连（宿主换一代进程 → 加入方不手动操作就能继续说话，成员不重复） | ✅ 已验证 | 同上：同一端口重开宿主，旧 `peerId` 失效后 `msg.send` 自己重新握手并落库 |
+| LAN 清扫（关掉的机器被撤掉；长轮询中 / 正在跑模型的机器不被误清） | ✅ 已验证 | 同上：把 idle 压到 400ms 跑真清扫，1.2s 后仍在屋里，关掉后整组消失 |
+| LAN 解散（宿主解散 → 加入方留墓碑、只能移除，不是死胡同） | ✅ 已验证 | 同上：`remote_room_gone` + 移除后 `links` 清空 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` |
 | 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png` |
@@ -152,7 +160,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 客户端装载（25 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 客户端装载（28 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

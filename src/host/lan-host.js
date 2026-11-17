@@ -32,6 +32,20 @@ function assignTimeout() {
   return Number.isSafeInteger(raw) && raw > 0 ? raw : ASSIGN_TIMEOUT
 }
 
+/**
+ * 对面的机器多久没露面就算走了。默认 45s 比一次长轮询（25s）长一倍，
+ * 刚好处在「轮询间隙」和「真的关掉了」之间；用环境变量压短给测试走失败路径。
+ */
+function peerIdle() {
+  const raw = Number(process.env.DSH_CHATROOM_PEER_IDLE)
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : PEER_IDLE
+}
+
+/** 清扫周期：比 idle 短，掉线后最多一个周期就能从成员列里消失。 */
+function sweepMs() {
+  return Math.min(15_000, Math.max(500, Math.floor(peerIdle() / 3)))
+}
+
 const logDefault = () => {}
 
 /** 端口 0 是有意义的（让系统挑一个空闲端口，测试与截图走这条），所以不能写成 `|| 4399`。 */
@@ -79,6 +93,23 @@ function readJson(request) {
 
 const ipOf = (request) => String(request.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
 
+/**
+ * 对面把连接断了（关窗口、进程被杀）时，长轮询要立刻醒。
+ *
+ * 不醒的话，服务器会继续把手上的等待跑满 25 秒才释放 —— 期间那台机器仍被当成
+ * 「正在轮询、还活着」，清扫器不敢清，成员列里就是一条挂着的幽灵。
+ */
+function closedSignal(request, response) {
+  return new Promise((resolve) => {
+    const done = () => resolve('closed')
+    if (request.destroyed || response.destroyed) done()
+    else {
+      request.once('close', done)
+      response.once('close', done)
+    }
+  })
+}
+
 export function createLanHost({ store, onHumanMessage = () => {}, log = logDefault, machine = hostname(), port } = {}) {
   /** peerId → {id, machine, address, roomId, selfMemberId, since, lastSeen, agents} */
   const peers = new Map()
@@ -87,6 +118,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
   /** 长轮询的唤醒器：有人加入、有新 assignment、状态变了，都推一下。 */
   const wakers = new Set()
   let server = null
+  let sweeper = null
   let bound = { port: null }
   let closed = false
   let lastError = null
@@ -136,6 +168,24 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     })
   }
 
+  /**
+   * 这台机器是不是还活着。
+   *
+   * 光看 lastSeen 不够，有两种「沉默但活着」：
+   *   - 正在跑模型：那台机器几十秒不轮询，按时间判会把一个正在写回复的 agent 当成掉线；
+   *   - 长轮询还挂着：这 25 秒里它一个请求都还没发出下一句。
+   * 这两种都算活着；只有连接断了、又过了 idle 之后才清。
+   */
+  function busy(peerId) {
+    for (const row of assignments.values()) {
+      if (!row.done && row.peerId === peerId) return true
+    }
+    return false
+  }
+
+  const alive = (peer, now = Date.now()) =>
+    (peer.inflight ?? 0) > 0 || busy(peer.id) || now - peer.lastSeen < peerIdle()
+
   function status() {
     const now = Date.now()
     return {
@@ -146,7 +196,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       error: lastError,
       pending: [...assignments.values()].filter((row) => !row.done).length,
       peers: [...peers.values()]
-        .filter((peer) => now - peer.lastSeen < PEER_IDLE)
+        .filter((peer) => alive(peer, now))
         .map((peer) => ({
           id: peer.id,
           machine: peer.machine,
@@ -212,7 +262,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         const row = addMember(draft, {
           roomId: room.id,
           member: {
-            id: `m_${key}`,
+            // 成员 id 带上 peer 片段：两台机器如果装的是同一份配置（bot id 相同），
+            // 只按 botId 拼 id 会让第二个人顶掉第一个人的成员，话就算到别人头上。
+            id: `m_${peerId.slice(2, 10)}_${key}`,
             kind: 'bot',
             name: agent?.name,
             role: agent?.role,
@@ -247,7 +299,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       return Promise.reject(Object.assign(new Error('not_remote'), { code: 'not_remote' }))
     }
     const peer = peers.get(member.owner)
-    if (!peer || Date.now() - peer.lastSeen > PEER_IDLE) {
+    if (!peer || !alive(peer)) {
       return Promise.reject(Object.assign(new Error(`${member.name} 所在的机器不在线。`), { code: 'peer_offline' }))
     }
     const id = `as_${randomUUID().replace(/-/g, '').slice(0, 12)}`
@@ -332,8 +384,15 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       } else if (path === '/lan/state' && request.method === 'GET') {
         const peer = requirePeer(url.searchParams.get('peerId'))
         const since = Number(url.searchParams.get('since') ?? -1)
-        await waitRevision(since, WAIT_MS)
-        peer.lastSeen = Date.now()
+        peer.inflight = (peer.inflight ?? 0) + 1
+        let why = 'value'
+        try {
+          why = await Promise.race([waitRevision(since, WAIT_MS).then(() => 'value'), closedSignal(request, response)])
+        } finally {
+          peer.inflight -= 1
+        }
+        // 连接已经断了就别再记成「刚露过面」，否则死后还能靠一次握手把清扫推迟一轮。
+        if (why !== 'closed') peer.lastSeen = Date.now()
         value = { revision: store.state.revision, snapshot: viewFor(peer), hostMachine: machine, selfMemberId: peer.selfMemberId }
       } else if (path === '/lan/message' && request.method === 'POST') {
         const input = await readJson(request)
@@ -356,9 +415,22 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         value = { messageId: posted?.id ?? null, seq: posted?.seq ?? null, snapshot: viewFor(peer) }
       } else if (path === '/lan/assignments' && request.method === 'GET') {
         const peer = requirePeer(url.searchParams.get('peerId'))
-        const assignment = await nextAssignment(peer.id)
-        peer.lastSeen = Date.now()
-        value = { assignment, revision: store.state.revision }
+        peer.inflight = (peer.inflight ?? 0) + 1
+        let picked = null
+        let why = 'value'
+        try {
+          why = await Promise.race([
+            nextAssignment(peer.id).then((assignment) => {
+              picked = assignment
+              return 'value'
+            }),
+            closedSignal(request, response),
+          ])
+        } finally {
+          peer.inflight -= 1
+        }
+        if (why !== 'closed') peer.lastSeen = Date.now()
+        value = { assignment: picked, revision: store.state.revision }
       } else if (path === '/lan/reply' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)
@@ -408,10 +480,12 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'internal_error'
       const status = code === 'peer_unknown' || code === 'room_not_found' || code === 'code_required' ? 403 : 400
+      if (response.destroyed || response.writableEnded) return
       response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ ok: false, error: { code, message: String(error?.message ?? code).slice(0, 300) } }))
       return
     }
+    if (response.destroyed || response.writableEnded) return
     response.writeHead(200, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
@@ -444,6 +518,32 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     if (removed) log('lan_pruned_stale', removed)
   }
 
+  /**
+   * 跑着的宿主也要清扫：对面关了窗口，peer 就再没人轮询。
+   *
+   * 不扫的话，屋子里会一直留着它的成员 —— 界面显示「在线」，@ 它也不回，
+   * 只能等宿主自己重启。扫的动作和重启时的清理一样：整组撤掉。
+   * 正在等回归的 assignment 不清（那是「还在说话」，不是「跑了」）。
+   */
+  function sweep() {
+    const now = Date.now()
+    const dropped = [...peers.values()].filter((peer) => !alive(peer, now))
+    for (const peer of dropped) {
+      peers.delete(peer.id)
+      try {
+        store.commit((draft) => {
+          removePeer(draft, { roomId: peer.roomId, peerId: peer.id })
+        })
+      } catch (error) {
+        // 屋子已经被解散：成员跟着屋子一起没了，不是错误。
+        log('lan_sweep_skip', { peer: peer.id, error })
+      }
+      log('lan_peer_gone', { machine: peer.machine, address: peer.address })
+    }
+    if (dropped.length) wake()
+    return dropped.length
+  }
+
   async function start(wantPort = port ?? defaultPort()) {
     if (server) return status()
     closed = false
@@ -474,12 +574,18 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     }
     server = next
     bound = { port: next.address()?.port ?? wantPort }
+    sweeper = setInterval(sweep, sweepMs())
+    sweeper.unref?.()
     log('lan_listening', bound.port)
     return status()
   }
 
   async function stop() {
     closed = true
+    if (sweeper) {
+      clearInterval(sweeper)
+      sweeper = null
+    }
     for (const row of assignments.values()) {
       row.done = true
       clearTimeout(row.timer)
@@ -498,5 +604,5 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return status()
   }
 
-  return { start, stop, status, enqueue, peers, assignments, membersOfPeer, get address() { return bound.port ? `${hostname()}:${bound.port}` : null } }
+  return { start, stop, status, enqueue, sweep, peers, assignments, membersOfPeer, get address() { return bound.port ? `${hostname()}:${bound.port}` : null } }
 }

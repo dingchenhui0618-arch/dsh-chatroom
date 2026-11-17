@@ -92,21 +92,32 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
   function runtimeOf(linkId) {
     let runtime = runtimes.get(linkId)
     if (!runtime) {
-      runtime = { stopped: false, controller: new AbortController(), rejoining: 0 }
+      runtime = { stopped: false, controller: new AbortController(), rejoining: 0, failedAt: 0 }
       runtimes.set(linkId, runtime)
     }
     return runtime
   }
 
+  /** 已在本地留下墓碑：房间还在列表里，标成已解散，用户能自己清理。 */
+  function paintGone(draft, record) {
+    const room = draft.rooms.find((row) => row.id === record.localRoomId)
+    if (!room) return
+    room.remote = { ...room.remote, lost: true }
+    room.unread = 0
+    room.activity = null
+  }
+
   function upsertMirror(draft, record, snapshot) {
     draft.links = (draft.links ?? []).filter((link) => link.id !== record.id).concat(record)
     const next = mirrorRoom(record, snapshot)
-    draft.rooms = draft.rooms.filter((room) => room.id !== record.localRoomId)
-    if (next) {
-      draft.rooms.push(next)
-      // 刚加入就把视图切过去：用户下一步一定是想说话，而不是回到本机空房间。
-      draft.activeRoomId = next.id
+    if (!next) {
+      paintGone(draft, record)
+      return
     }
+    draft.rooms = draft.rooms.filter((room) => room.id !== record.localRoomId)
+    draft.rooms.push(next)
+    // 刚加入就把视图切过去：用户下一步一定是想说话，而不是回到本机空房间。
+    draft.activeRoomId = next.id
   }
 
   function markStatus(linkId, { status, error = null, peerId, selfMemberId }) {
@@ -120,20 +131,61 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     })
   }
 
+  /** 停掉一条链接的两个长轮询（离开、或屋子已经没了）。 */
+  function stopRuntime(linkId) {
+    const runtime = runtimes.get(linkId)
+    if (!runtime) return
+    runtime.stopped = true
+    runtime.controller.abort()
+    runtimes.delete(linkId)
+  }
+
   function applyRemote(linkId, snapshot) {
     const record = linkById(linkId)
     if (!record) return null
     const next = mirrorRoom(record, snapshot)
+    // 宿主那边把这间屋子解散了：投影里没有它了。
+    // 不能就此把镜像悄悄删掉 —— 那会让加入方卡在一个「发不出去、也没有离开入口」的状态里。
+    // 留一张墓碑：房间还在列表里，标成已解散，用户能自己把它清掉。
+    const gone = !next && Boolean(store.state.rooms.find((room) => room.id === record.localRoomId))
     store.commit((draft) => {
       const link = (draft.links ?? []).find((row) => row.id === linkId)
       if (link) {
-        link.status = 'online'
-        link.error = null
+        link.status = gone ? 'gone' : 'online'
+        link.error = gone ? '这间屋子已经在宿主那台机器上解散了。' : null
       }
-      draft.rooms = draft.rooms.filter((room) => room.id !== record.localRoomId)
-      if (next) draft.rooms.push(next)
+      if (next) {
+        draft.rooms = draft.rooms.filter((room) => room.id !== record.localRoomId)
+        draft.rooms.push(next)
+        return
+      }
+      paintGone(draft, record)
     })
+    if (gone) {
+      stopRuntime(linkId)
+      log('lan_room_gone', { link: linkId })
+    }
     return next
+  }
+
+  /**
+   * 宿主重启 / 它那侧进程换了，peerId 立刻失效（这是有意的：宁可让对面重连，
+   * 也不拿旧身份错认人）。所以任何一次转发撞上 peer_unknown 时，自己重新握手
+   * 再来一次 —— 用户不该因为对面刚重启就看到一句「凭据失效」。
+   */
+  async function withPeer(record, run) {
+    const fresh = linkByRoom(record.localRoomId) ?? record
+    if (fresh.status === 'gone') fail('remote_room_gone', '这间屋子已经在宿主那台机器上解散了。')
+    try {
+      return await run(fresh)
+    } catch (error) {
+      if (error?.code !== 'peer_unknown') throw error
+      const value = await rejoin(fresh.id).catch(() => null)
+      if (!value) throw error
+      const next = linkByRoom(fresh.localRoomId)
+      if (!next) throw error
+      return run(next)
+    }
   }
 
   async function join(input = {}) {
@@ -174,32 +226,48 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
     return record
   }
 
+  /**
+   * 换一个新的 peerId 重新握手。
+   *
+   * 并发去重：长轮询和「用户正在发言」很可能同时撞上旧凭据，两边各自 join 一次
+   * 就会在宿主那边建出两套成员（屋里出现两个「周荻」）。所以同一时刻只允许一次握手，
+   * 后来的人等同一个 promise。失败后压 3 秒再试，避免对着关掉的机器刷请求。
+   */
   async function rejoin(linkId) {
     const record = linkById(linkId)
     if (!record) return null
     const runtime = runtimeOf(linkId)
-    const now = Date.now()
-    if (now - runtime.rejoining < 3000) return null
-    runtime.rejoining = now
+    if (runtime.rejoining) return runtime.rejoining
+    if (runtime.failedAt && Date.now() - runtime.failedAt < 3000) return null
+    const run = (async () => {
+      try {
+        const value = await postJson(
+          `${baseUrl(record.host, record.port)}/lan/join`,
+          {
+            code: record.code,
+            machine: record.machine,
+            self: { id: store.state.self.id, name: store.state.self.name },
+            agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+          },
+          { timeoutMs: 15_000 },
+        )
+        runtime.failedAt = 0
+        store.commit((draft) => {
+          const next = { ...record, peerId: value.peerId, selfMemberId: value.selfMemberId, status: 'online', error: null }
+          upsertMirror(draft, next, value.snapshot)
+        })
+        return value
+      } catch (error) {
+        runtime.failedAt = Date.now()
+        markStatus(linkId, { status: 'offline', error: String(error?.message ?? error).slice(0, 200) })
+        return null
+      }
+    })()
+    runtime.rejoining = run
     try {
-      const value = await postJson(
-        `${baseUrl(record.host, record.port)}/lan/join`,
-        {
-          code: record.code,
-          machine: record.machine,
-          self: { id: store.state.self.id, name: store.state.self.name },
-          agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
-        },
-        { timeoutMs: 15_000 },
-      )
-      store.commit((draft) => {
-        const next = { ...record, peerId: value.peerId, selfMemberId: value.selfMemberId, status: 'online', error: null }
-        upsertMirror(draft, next, value.snapshot)
-      })
-      return value
-    } catch (error) {
-      markStatus(linkId, { status: 'offline', error: String(error?.message ?? error).slice(0, 200) })
-      return null
+      return await run
+    } finally {
+      runtime.rejoining = 0
     }
   }
 
@@ -290,35 +358,39 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
   async function send({ roomId, text, mentions, replyTo, opKey }) {
     const record = linkByRoom(roomId)
     if (!record) fail('remote_room_unknown', '这个房间不是从别的机器同步来的。')
-    // 本地的 'me' 在宿主那边是它自己的成员，必须换回我这台机器的成员 id，
-    // 否则「@我自己」会点到对面的人。
-    const declared = (Array.isArray(mentions) ? mentions : []).map((id) => (id === 'me' ? record.selfMemberId : id))
-    const value = await postJson(
-      `${baseUrl(record.host, record.port)}/lan/message`,
-      { peerId: record.peerId, text, mentions: declared, replyTo, opKey },
-      { timeoutMs: 20_000 },
-    )
-    applyRemote(record.id, value.snapshot)
-    return value
+    return withPeer(record, async (peer) => {
+      // 本地的 'me' 在宿主那边是它自己的成员，必须换回我这台机器的成员 id，
+      // 否则「@我自己」会点到对面的人。
+      const declared = (Array.isArray(mentions) ? mentions : []).map((id) => (id === 'me' ? peer.selfMemberId : id))
+      const value = await postJson(
+        `${baseUrl(peer.host, peer.port)}/lan/message`,
+        { peerId: peer.peerId, text, mentions: declared, replyTo, opKey },
+        { timeoutMs: 20_000 },
+      )
+      applyRemote(peer.id, value.snapshot)
+      return value
+    })
   }
 
   async function read({ roomId, seq }) {
     const record = linkByRoom(roomId)
     if (!record) return null
-    const value = await postJson(`${baseUrl(record.host, record.port)}/lan/read`, {
-      peerId: record.peerId,
-      seq,
-    })
-    if (value?.snapshot) {
-      applyRemote(record.id, value.snapshot)
+    return withPeer(record, async (peer) => {
+      const value = await postJson(`${baseUrl(peer.host, peer.port)}/lan/read`, {
+        peerId: peer.peerId,
+        seq,
+      })
+      if (value?.snapshot) {
+        applyRemote(peer.id, value.snapshot)
+        return value
+      }
+      store.commit((draft) => {
+        const room = draft.rooms.find((row) => row.id === roomId)
+        if (!room) return
+        room.unread = room.messages.filter((message) => message.seq > seq && message.authorId !== 'me').length
+      })
       return value
-    }
-    store.commit((draft) => {
-      const room = draft.rooms.find((row) => row.id === roomId)
-      if (!room) return
-      room.unread = room.messages.filter((message) => message.seq > seq && message.authorId !== 'me').length
     })
-    return value
   }
 
   async function rename(name) {
@@ -342,7 +414,7 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
       runtime.controller.abort()
       runtimes.delete(linkId)
     }
-    if (record) {
+    if (record && record.status !== 'gone') {
       await postJson(
         `${baseUrl(record.host, record.port)}/lan/leave`,
         { peerId: record.peerId },
@@ -361,6 +433,9 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
   /** 进程重启后把上次加入的房间接回来：宿主那边的 peerId 已经失效，重新握手。 */
   async function resume() {
     for (const record of links()) {
+      // 已经解散的屋子没有再握手的意思：重新 join 只会拿到 room_not_found，
+      // 白白把「已解散」这条状态覆盖成「离线」。
+      if (record.status === 'gone') continue
       try {
         await join({ host: record.host, port: record.port, code: record.code, machine: record.machine })
       } catch (error) {

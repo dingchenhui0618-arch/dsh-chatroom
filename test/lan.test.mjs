@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { apply } from '../src/host/plugin.js'
-import { call, fakeCtx, until } from './helpers/fake-ctx.mjs'
+import { call, fakeCtx, tick, until } from './helpers/fake-ctx.mjs'
 
 /**
  * 两台机器的端到端：真的起 node:http 监听、真的走局域网协议的 HTTP 请求，
@@ -250,8 +250,7 @@ test('宿主重启：上一轮从 LAN 进来的成员不会留成幽灵', async 
   }
 })
 
-test('局域网端点自带门禁：没带 peerId、带错的 peerId 都进不来', async () => {
-  const host = await boot('host-gate')
+test('局域网端点自带门禁：没带 peerId、带错的 peerId 都进不来', async () => {  const host = await boot('host-gate')
   try {
     await command(host, 'room.create', { name: '有门禁的屋子' })
     const port = (await snapshot(host)).lan.port
@@ -268,6 +267,120 @@ test('局域网端点自带门禁：没带 peerId、带错的 peerId 都进不�
     const body = await ping.json()
     assert.equal(body.value.serving, true)
   } finally {
+    await host.dispose()
+  }
+})
+
+test('宿主重启后旧凭据失效：加入方不用手动重连，下一次发言自己重新握手', async () => {
+  const host = await boot('host-rejoin', { reply: '重启之后还在。' })
+  const guest = await boot('guest-rejoin', { reply: '这边也还在。' })
+  try {
+    const created = await command(host, 'room.create', { name: '会重启的屋子' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(guest, 'room.create', { name: '客' })
+    await command(guest, 'self.rename', { name: '周荻' })
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+    const mirrorId = (await snapshot(guest)).rooms.find((room) => room.remote).id
+
+    // 宿主进程换一代：同一份 profile、同一个端口，上一轮的 peerId 全部作废。
+    await host.dispose()
+    process.env.DSH_CHATROOM_PORT = String(port)
+    const again = fakeCtx(host.dir, { reply: '重启之后还在。' })
+    const dispose = await apply(again.ctx)
+    try {
+      // 不做任何手工重连，直接说话 —— 用户视角就是「对面重启了，我继续发」。
+      const sent = await call(guest.routes, 'command', {
+        action: 'msg.send',
+        input: { roomId: mirrorId, text: '重启之后我还能说话。' },
+      })
+      assert.equal(sent.ok, true, `发言应该自己重连成功：${JSON.stringify(sent.error)}`)
+      const landed = await until(async () => {
+        const view = await call(again.routes, 'snapshot', {})
+        const room = view.value.rooms.find((row) => row.id === roomId)
+        return room.messages.find((message) => message.text.includes('重启之后我还能说话'))
+      }, { label: '重启后的消息落库' })
+      assert.equal(landed.authorName, '周荻')
+      // 只该出现一份「周荻」：并发重连去重没做好时，这里会冒出两个。
+      const view = await call(again.routes, 'snapshot', {})
+      const people = view.value.rooms.find((row) => row.id === roomId).members.filter((row) => row.kind === 'human')
+      assert.deepEqual(people.map((row) => row.name).sort(), ['周荻', '我'].sort())
+    } finally {
+      process.env.DSH_CHATROOM_PORT = '0'
+      await dispose()
+    }
+  } finally {
+    await guest.dispose().catch(() => {})
+  }
+})
+
+test('宿主解散房间：加入方留一张能清理的墓碑，不是发不出话也退不出的死胡同', async () => {
+  const host = await boot('host-dissolve')
+  const guest = await boot('guest-dissolve')
+  try {
+    const created = await command(host, 'room.create', { name: '会被解散的屋子' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(guest, 'room.create', { name: '客' })
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+    const mirrorId = (await snapshot(guest)).rooms.find((room) => room.remote).id
+
+    await command(host, 'room.dissolve', { roomId })
+
+    const tomb = await until(async () => {
+      const view = await snapshot(guest)
+      const room = view.rooms.find((row) => row.id === mirrorId)
+      return room && room.remote.lost ? { room, view } : null
+    }, { label: '加入方看到墓碑' })
+    assert.equal(tomb.view.links[0].status, 'gone')
+    assert.equal(tomb.room.messages.length, 0)
+    // 历史还在，但已经写不进去了：给出明确错误码，而不是一句泛泛的失败。
+    const refused = await call(guest.routes, 'command', {
+      action: 'msg.send',
+      input: { roomId: mirrorId, text: '还能发吗？' },
+    })
+    assert.equal(refused.ok, false)
+    assert.equal(refused.error.code, 'remote_room_gone')
+    // 关键：还能自己把它从列表里清掉。
+    await command(guest, 'lan.leave', { linkId: tomb.view.links[0].id })
+    const after = await snapshot(guest)
+    assert.equal(after.rooms.some((row) => row.id === mirrorId), false)
+    assert.equal(after.links.length, 0)
+  } finally {
+    await guest.dispose()
+    await host.dispose()
+  }
+})
+
+test('跑着的宿主会清掉真的关掉的机器，但不会清正在长轮询的那台', async () => {
+  // 把 idle 压到 400ms：测试要量的是「清扫逻辑」，不是等 45 秒。
+  process.env.DSH_CHATROOM_PEER_IDLE = '400'
+  const host = await boot('host-sweep')
+  const guest = await boot('guest-sweep')
+  try {
+    const created = await command(host, 'room.create', { name: '会掉人的屋子' })
+    const roomId = created.rooms[0].id
+    const port = (await snapshot(host)).lan.port
+    await command(guest, 'room.create', { name: '客' })
+    await command(guest, 'member.createBot', { roomId: (await snapshot(guest)).rooms[0].id, name: '阿丁' })
+    await command(guest, 'lan.join', { host: '127.0.0.1', port, code: created.rooms[0].code })
+
+    // 对面一直挂着长轮询（这是它在屋里的常态），不能被当成掉线清掉。
+    await tick(1200)
+    const alive = await snapshot(host)
+    assert.equal(alive.rooms.find((room) => room.id === roomId).members.length, 3, '长轮询中的机器不算掉线')
+    assert.equal(alive.lan.peers.length, 1)
+
+    // 真的关掉（不发 leave，模拟关窗口 / 掉网），清扫器应该把整组成员撤掉。
+    await guest.dispose()
+    const swept = await until(async () => {
+      const view = await snapshot(host)
+      const room = view.rooms.find((row) => row.id === roomId)
+      return room.members.length === 1 && view.lan.peers.length === 0 ? view : null
+    }, { label: '清扫掉线的机器', timeoutMs: 8000 })
+    assert.equal(swept.rooms.find((room) => room.id === roomId).members[0].owner ?? 'local', 'local')
+  } finally {
+    delete process.env.DSH_CHATROOM_PEER_IDLE
     await host.dispose()
   }
 })
