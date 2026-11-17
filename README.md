@@ -128,6 +128,20 @@ token 烧光的唯一闸门。
 - **宿主把屋子解散了**：加入方这边留一条「已在宿主那台解散」的墓碑 —— 历史还能看、
   输入框锁住、右栏「从列表移除」可以清掉。不会卡在一个发不出话也退不出的房间里。
 
+连不上、或者怀疑两边跑的不是同一版代码时，先问一句探针（不需要房间码）：
+
+```bash
+curl -s http://10.0.51.18:4399/lan/ping
+# {"ok":true,"value":{"ok":true,"hostMachine":"…","serving":true,
+#   "code":{"version":"0.1.0","loadedAt":"2026-11-17T06:50:12.345Z",
+#           "newestMtime":"2026-11-17T06:41:52.315Z","stale":false}}}
+```
+
+`loadedAt` 是**这份代码进进程的那一刻**，`newestMtime` 是宿主文件在磁盘上最新的改动时间；
+`stale: true` 就是在说「磁盘上已经有内存里没有的改动，得重载或重启」。插件装在 profile 里
+是一份拷贝或 junction，改了文件不等于跑着的进程换了代码 —— 这一条能把「没修好」和
+「修了但没生效」分开。
+
 想先验网络通不通（防火墙、网段、房间码），用自检脚本，不烧 token：
 
 ```bash
@@ -205,6 +219,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **主持人跨机器**：主席是 B 那台机器的 agent，它回复里 @ 了 A 那台机器的 agent，下一轮要派到 A | ✅ 已验证 | 同上：跨机器回传的文字里 @ 仍然被认出来，A 被派发 1 次、宿主的模型调用 0 次 |
 | 第三方离开：只撤它的人和 agent，另外两台照旧（包括 A 的镜像里 B 消失而自己不丢） | ✅ 已验证 | 同上 |
 | 跨机器联通自检 | ✅ 已验证 | `node tools/lan-check.mjs`：在本机 `10.0.51.18:4455` 上真跑通一轮 |
+| **跑着的到底是不是当前代码**（插件在 profile 里是拷贝 / junction，改了文件 ≠ 进程换了代码） | ✅ 已验证 | `test/code-stamp.test.mjs` 2 用例：刚从磁盘装载的实例 `stale` 为 false；把宿主某个文件的时间戳改到未来再重新求值同一模块，同一判据翻成 true。`/lan/ping` 一并带出 `version` / `loadedAt` / `newestMtime` / `stale` |
 | **跨操作系统、跨网段的真 TCP 全链路**（Windows ↔ WSL2 Ubuntu 互为宿主各跑一轮） | ✅ 已验证 | Windows 宿主 `10.0.51.18:4455` + Ubuntu 加入方（`172.22.82.249`）：加入 → 镜像房间 → `@` 宿主那台的 agent → 回传落库；反过来 Ubuntu 宿主 `172.22.82.249:4567` + Windows 加入方同样通过。两边各自的 `node` 进程、各自的网络栈，走的是真网卡而不是回环 |
 | Client 包按加载协议装载、四个 slot 注册 | ✅ 已验证 | `test/client.bundle.test.mjs` 3 用例：真按 `window.__ModuleLoader__.load({id, factory})` 装载，断言侧栏入口 / 主面板 / 会话开关 / 悬浮窗四处的注册；另外两条分别验「有连接服务时走 `rpc.call`、一次不碰 `fetch`」和「取不到连接服务时回落到同源 `/api`，信封一致、拿到快照后照常长轮询」 |
 | **四个 slot 在真实客户端里确实挂上**（不是只有替身页面） | ✅ 已验证 | 用 Client Inspect 直接查运行中的客户端：`sidebar.panellist` 里 `dsh-chatroom#chatroom`（order 30）、`main` 里 key `chatroom`、`conversation.session.header.actions` 里 `chatroom-toggle`（order 200）、`shell.overlay` 里 `chatroom-float`（order 20），四条都是 `active: true`；用的 5 个主题变量（`label-primary` / `label-secondary` / `border-l1` / `brand-primary` / `bg-overlay`）在当前主题里都存在 |
@@ -214,6 +229,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 真实渲染（面板 / 邀请 / 规则 / 加入方视角 / 悬浮窗 / 提醒 / 三台机器同屋 / 已解散） | ✅ 已验证 | `docs/panel.png`、`docs/invite.png`、`docs/rules.png`、`docs/guest.png`、`docs/float.png`、`docs/notify.png`、`docs/three-machines.png`、`docs/gone.png` |
 | **三台机器同屋的界面**分得清是哪台机器（不是笼统一个「LAN」） | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'three-parties'`：第三个进程真加入后，断言 7 个成员都在、周荻与尾货 agent 的消息 chip 含「周荻的 MacBook」、陈默与库存 agent 含「陈默的 ThinkPad」、本机三个成员一个 LAN 标都没有、消息行里至少出现两台不同机器 |
 | 装进运行中的 desktop profile | ✅ 已验证 | 插件管理器 `application: applied`；`GET http://127.0.0.1:4399/lan/ping` 有回应 |
+| **从干净克隆就能跑**（不是只有开发目录里能跑） | ✅ 已验证 | `git clone --depth 1` 到空目录 → `npm install` → `npm test` 全绿；推上去的那份是完整的，没漏掉只有本机才有的文件 |
 | **真模型对话（不是假模型）** | ✅ 已验证 | 从局域网 peer 身份发 `@验收 agent …`，运行中的 DSH 宿主用真模型回了一段中文，序贯落库（`origin` 仍是 `local`，因为那个 agent 在宿主本机） |
 | 两台**物理**机器互连 | ⏳ 只在本机回环 + 本机 LAN IP + WSL（另一个内核、另一套网络栈）上验过 | 还差一台真机器：在上面跑一次 `tools/lan-check.mjs guest --host <本机 LAN IP>:4399 --code <房间码>` |
 
@@ -236,7 +252,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 客户端装载 + 包清单（47 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + LAN 抗坏包 + 代码指纹 + 客户端装载 + 包清单（49 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

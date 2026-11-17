@@ -12,6 +12,7 @@ import {
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
 import { project } from './project.js'
+import { code } from './code.js'
 
 /**
  * LAN 宿主：这台机器上的房间让局域网里另一台机器加入。
@@ -191,6 +192,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return {
       serving: Boolean(server && bound.port),
       port: bound.port,
+      /** 跑着的这份代码是哪一版、什么时候进的进程：热重载/重启后与原值可比。 */
+      code,
       machine,
       addresses: lanAddresses(),
       error: lastError,
@@ -496,7 +499,14 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         wake()
         value = { left: true }
       } else if (path === '/lan/ping') {
-        value = { ok: true, hostMachine: machine, serving: Boolean(bound.port) }
+        /**
+         * 不需要凭据的那个探针，顺手带上版本与装载时间。
+         *
+         * 排障时最常问的一句是「对面跑的是哪一版、还是我们刚改的那份吗」，而这份信息
+         * 恰恰只有**跑着的那台机器**知道。机器的名字本来就已经在这里报出去了，版本
+         * 比它还不敏感，所以放这儿不额外扩大暴露面。
+         */
+        value = { ok: true, hostMachine: machine, serving: Boolean(bound.port), code }
       } else {
         response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
         response.end(JSON.stringify({ ok: false, error: { code: 'not_found', message: '没有这个端点。' } }))

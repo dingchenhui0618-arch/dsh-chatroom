@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -266,6 +267,21 @@ test('局域网端点自带门禁：没带 peerId、带错的 peerId 都进不�
     assert.equal(ping.status, 200)
     const body = await ping.json()
     assert.equal(body.value.serving, true)
+
+    // 探针要能回答「对面跑的是哪一版、这份代码什么时候进的进程」。
+    // 内存里的代码和磁盘上的代码可以不是同一份（插件热装/重载），所以装载时间
+    // 必须是模块求值那一刻写下、之后不再变的常量。
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    assert.equal(body.value.code.version, pkg.version)
+    assert.match(body.value.code.loadedAt, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/, '装载时间应是 ISO 时间戳')
+    assert.ok(body.value.code.newestMtime, '磁盘上宿主文件的最新改动时间要能读到')
+    assert.equal(body.value.code.stale, false, '刚从磁盘装载的这份代码不该被判成过期')
+    assert.ok(
+      Date.parse(body.value.code.newestMtime) <= Date.parse(body.value.code.loadedAt) + 1000,
+      '磁盘最新改动不该晚于装载时间',
+    )
+    const again = await (await fetch(`${base}/lan/ping`)).json()
+    assert.equal(again.value.code.loadedAt, body.value.code.loadedAt, '装载时间是常量，两次探测必须一致')
   } finally {
     await host.dispose()
   }
