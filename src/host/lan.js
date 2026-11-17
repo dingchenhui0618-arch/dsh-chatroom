@@ -27,16 +27,47 @@ export const fail = (code, message) => {
  */
 export const BUILD = { agents: 1 }
 
-/** 本机在局域网里的 IPv4 地址。公网/回环/虚拟网卡不在这里筛，界面自己决定怎么显示。 */
-export function lanAddresses() {
+/**
+ * 虚拟网卡的名字特征：这些地址本机自己通，隔壁那台物理机器到不了。
+ *
+ * 踩过的坑：Windows 上 os.networkInterfaces() 的返回顺序没有保证，装了 WSL2 的机器
+ * 里 `vEthernet (WSL (Hyper-V firewall))` 经常排在 WLAN/以太网前面。界面只取
+ * addresses[0] 的话，递给对方的邀请地址就是 172.22.x.x —— 抄过去只会一直超时，
+ * 而人看着「地址明明是对的」。所以排序时把虚拟网卡压到后面，并带一个 virtual 标记
+ * 让界面能直说「这张是虚拟网卡」。
+ */
+const VIRTUAL_NIC =
+  /(vethernet|hyper-v|wsl|vmware|virtualbox|vbox|docker|podman|br-|veth|tap|tun|npcap|loopback|hamachi|tailscale|zerotier|utun)/i
+
+/** 真正的局域网地址排在前面：私网按「最常见」排，其余靠后。 */
+function rank(name, address) {
+  let score = 0
+  if (VIRTUAL_NIC.test(name)) score += 10
+  if (/^192\.168\./.test(address)) score += 0
+  else if (/^10\./.test(address)) score += 1
+  else if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) score += 2
+  else score += 3
+  return score
+}
+
+/**
+ * 本机在局域网里的 IPv4 地址，按「对方最可能连得上」的顺序排好。
+ *
+ * 169.254.x.x（APIPA：没拿到 DHCP 时自己编的地址）进不了另一台机器，直接不算候选。
+ */
+export function lanAddresses(nets = networkInterfaces()) {
   const out = []
-  const nets = networkInterfaces()
+  let index = 0
   for (const [name, list] of Object.entries(nets ?? {})) {
     for (const net of list ?? []) {
-      if (net.family === 'IPv4' && !net.internal) out.push({ address: net.address, name })
+      if (net.family !== 'IPv4' || net.internal) continue
+      if (/^169\.254\./.test(net.address) || net.address === '0.0.0.0') continue
+      out.push({ address: net.address, name, virtual: VIRTUAL_NIC.test(name), at: index++ })
     }
   }
-  return out
+  // 稳定排序：同分保留系统给的顺序，测试与截图才可复现。
+  out.sort((a, b) => rank(a.name, a.address) - rank(b.name, b.address) || a.at - b.at)
+  return out.map(({ address, name, virtual }) => ({ address, name, virtual }))
 }
 
 export function parseTarget(host, port) {

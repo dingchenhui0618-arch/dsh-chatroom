@@ -111,6 +111,13 @@ function serve(side, port, { nudge = null } = {}) {
         return
       }
 
+      // 只读：把宿主此刻的 LAN 现状（端口 + 排好序的地址）交给截图脚本当基准。
+      // 邀请条上那句地址必须和这里对得上 —— 否则「排错序」这件事在截图上根本看不出来。
+      if (url.pathname === '/preview/lan') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(host.lan.status()))
+        return
+      }
       // 让第三台机器真的加入（真握手、真派发）：这张截图要证明界面分得清「哪一台机器」。
       if (url.pathname === '/preview/third') {
         usage.writes += 1

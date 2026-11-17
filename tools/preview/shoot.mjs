@@ -50,8 +50,8 @@ const shots = [
     view: 'panel',
     waitFor: '.cr-msg',
     open: '邀请',
-    verify: 'name-edit',
-    caption: '邀请另一台机器：局域网地址 + 房间码就是全部凭据，另一台机器填这两样就能进来',
+    verify: ['invite-address', 'name-edit'],
+    caption: '邀请另一台机器：局域网地址 + 房间码就是全部凭据；装 WSL/Hyper-V 的机器把真实网卡排前面，其余的列在下面并标出虚拟网卡',
   },
   {
     name: 'rules',
@@ -484,6 +484,36 @@ try {
       }
       if ((await readName()) !== '林岸') throw new Error('改完之后输入框没有回到当前名字')
       console.log('verified — 名字可改：成员列当场换名字，再改回来')
+    }
+
+    // 邀请条上那句地址是对方唯一要抄的东西，得和宿主此刻的真实网卡排出来的一致：
+    // 虚拟网卡不能占着第一个（本机能通、隔壁那台永远超时），其余的必须列出来并标明。
+    if (wants(shot, 'invite-address')) {
+      const truth = await (await fetch(`http://127.0.0.1:${port}/preview/lan`)).json()
+      const shown = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const row = document.querySelector('.cr-invite .cr-invite-row code')
+          const notes = [...document.querySelectorAll('.cr-invite .cr-invite-note')].map((node) => String(node.textContent).trim())
+          return { address: row ? String(row.textContent).trim() : '', notes }
+        })()`,
+      )
+      if (!/^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(shown.address)) {
+        throw new Error(`邀请条上的地址不成形：${JSON.stringify(shown.address)}`)
+      }
+      const shownHost = shown.address.split(':')[0]
+      const candidates = truth.addresses ?? []
+      const real = candidates.filter((row) => !row.virtual)
+      if (real.length && shownHost !== real[0].address) {
+        throw new Error(`邀请条递出去的是 ${shownHost}，而能连上的第一个是 ${real[0].address}`)
+      }
+      for (const row of candidates.filter((item) => item.virtual && item.address !== shownHost)) {
+        const listed = shown.notes.find((note) => note.includes(row.address))
+        if (!listed) throw new Error(`虚拟网卡地址没列出来，人只能自己去猜：${row.address} / ${JSON.stringify(shown.notes)}`)
+        if (!/虚拟/.test(listed)) throw new Error(`虚拟网卡没被标出来：${listed}`)
+      }
+      console.log(`verified — 邀请地址递的是能连上的那个（${shownHost}），其余地址列在下面并标出虚拟网卡`)
     }
 
     // 截图只证明「出现了未读」，还得证明它「会消」：展开浮窗就等于看过了，
