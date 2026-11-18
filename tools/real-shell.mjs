@@ -7,7 +7,7 @@
  *
  * 它不参与像素门禁：要先联网装一个固定版本的 dsh、起一台真 web，属于集成证据，不是回归基线。
  *
- * 用法（先按 README 的「真实外壳」小节把临时 profile 装好、把 dsh web 起起来）：
+ * 用法（先按 README 的「真外壳」小节把临时 profile 装好、把 dsh web 起起来）：
  *
  *   node tools/real-shell.mjs --url "http://127.0.0.1:3411/?token=<启动时打印的 token>" \
  *                             --out docs/real-shell.png
