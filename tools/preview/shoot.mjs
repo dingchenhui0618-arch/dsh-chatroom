@@ -1823,6 +1823,13 @@ try {
       if (after.button) throw new Error('已经翻到最早一条，入口还挂着')
       if (!/11\/01/.test(after.first)) throw new Error(`翻到的不是最早那句：${after.first}`)
       if (!/11\/24/.test(after.last)) throw new Error(`最新那句不该被翻页换掉：${after.last}`)
+      // 视口接回去是「下一帧」的事：loadOlder 在拿到那一页后用 requestAnimationFrame 补高度，
+      // 上面那个轮询一看到 240 行就退出，可能正压在这一帧之前。等它落稳再断言 ——
+      // 30×50ms 还回不到 0 以上，才是真的把人跳到顶上。
+      for (let i = 0; i < 30 && !(after.scrollTop > 0); i += 1) {
+        await sleep(50)
+        after = await readTimeline()
+      }
       if (!(after.scrollTop > 0)) throw new Error('翻完视口被跳回顶部：用户读的那句会掉下去')
       if (!after.jump || !/回到最新/.test(after.jump)) {
         throw new Error(`翻到上头之后没有回到最新的出口：${after.jump}`)
