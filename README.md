@@ -429,6 +429,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | agent 表单在真实渲染里能改职责并落库 | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'agent-edit'`：点「改」→ 表单原地展开 → 改职责 → 保存 → 成员列当场换，再改回原值 |
 | LAN 请求面**不会被坏包打死**（畸形 `Host` / 非法请求行 / 超大 body / 非 JSON / 未知路径） | ✅ 已验证 | `test/lan-hardening.test.mjs` 3 用例：直接往 socket 灌字节，断言每条都有状态码、之后宿主仍能服务、全程零未处理拒绝。拿修复前的代码跑同一组测试，3 条全红 |
 | LAN 请求面**不会被随机字节弄坏状态**（模糊测试） | ✅ 已验证 | `test/lan-fuzz.test.mjs` 3 用例：①固定种子（`20261118`）生成 120 个随机包（随机方法 / 路径 / 头 / body、15% 连请求行都不完整），跑完断言三点 —— 宿主仍在服务、**`revision` / 屋子数 / 成员数 / 消息数一个都没变**、全程 0 个 5xx；②10 个点名坏包（8 KB 头、非法 chunk 长度、两条请求挤一个连接、`Content-Length: -1`、400 KB body、Upgrade、HTTP/0.9 一行…）逐个断言不 5xx、之后 ping 仍 200、状态不变，最后真实建房 + 加入仍走得通；③七个端点各拿伪造 `peerId` 打一遍（读快照 / 读历史 / 发言 / 领回合 / 回传 / 改名 / 补报名单），必须一律 403 `peer_unknown` 且屋里状态不变。反证做过：把 `requirePeer` 改成「不认识也造一个」，「读快照应该被挡在门外，实际 200」当场红 |
+| 房间码**试错有代价**（没有节流时，同网段一台机器可以打满速一直猜） | ✅ 已验证 | `test/lan-ratelimit.test.mjs` 3 用例：同一地址连错 12 次 → 第 13 次 **429 `too_many_tries`**、提示里带「等 N 秒再试」；连输对房间码在这一分钟里也先被拦；换一个来源地址（`localAddress: 127.0.0.2`，真当另一台机器）照常 200 并真的进到屋里（成员列出现）；打错 11 次之后输对照常进屋，成功一次就把账清掉，之后 11 次打错仍是 403 而不是 429。反证做过：把 `JOIN_LIMIT` 调到 9999，「第 13 次该是 429，实际 403」当场红 |
 | LAN 响应**不能被别人家的网页读走**（成功响应里不带 CORS 放行头） | ✅ 已验证 | `test/lan-hardening.test.mjs` 新增一条：带 `Origin: https://evil.example` 打 `/lan/ping`、`/lan/join`，再对 `/lan/message` 发 OPTIONS 预检，三条响应的 `access-control-allow-origin` / `-credentials` / `-methods` 必须都不存在、预检回 404。修复前红在「探针的响应里出现了 access-control-allow-origin —— 随便一个网页就能读过本机聊天记录」。调用方只有另一台机器上的插件进程（node 的 `fetch`，不看 CORS）和 `curl`，界面那半边走同源宿主 RPC，所以这条放行头没有用处，只多一条跨站读的路 |
 | **端口 4399 被别的程序占了**（插件装了两份、或别的服务压了这个端口） | ✅ 已验证 | `test/lan-port-busy.test.mjs` 2 用例：先用一个真 `node:http` 占住端口，再把插件起在同一端口上 —— `apply()` 不抛、本机房间照常建房发言、`@` 到的 agent 照常回话、`snapshot.lan` 报 `serving: false` 与「端口 N 被占用了。」，后面还跟着「关掉占着它的程序，或用 DSH_CHATROOM_PORT 换一个端口」——那行会原样出现在邀请栏里，不把人堵在死路上；把「监听失败就让插件整体挂掉」写回去，第一条当场红。第二条先占后放：那个端口下一次能正常起来、`port` 还是同一个号、`error` 清空，证明失败那次没留下半开的监听 |
 | **三台机器同屋**（宿主 + 两台加入方）：6 个成员的归属不串台，A 的镜像把 B 的人标成 `LAN · GUEST-B`，B 说一句在 A 那边不能变成本机 | ✅ 已验证（真 HTTP） | `test/lan-multi.test.mjs` 4 用例：`@阿乙` 只派给 B（A 与宿主的模型调用次数都是 0），B 的回复落库 `origin.machine = GUEST-B` |
@@ -493,8 +494,8 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
   不被放行头挡住时浏览器就会把屋里的话、成员机器名、刚拿到的 `peerId` 交给它。这条有断言：
   `test/lan-hardening.test.mjs` 里带 `Origin` 打探针、加入、预检三条路径，成功响应里
   `access-control-allow-origin` 必须不存在。
-- 完整的信任边界（谁能碰到什么、房间码的强度、落盘里有什么、明确不做哪些事）写在
-  [`docs/SECURITY.md`](docs/SECURITY.md)。
+- 完整的信任边界（谁能碰到什么、房间码的强度与试错节流、落盘里有什么、明确不做哪些事）
+  写在 [`docs/SECURITY.md`](docs/SECURITY.md)。
 - 不做附件、撤回、通知推送、手机端。
 - 加入方的镜像房间不能改规则、不能解散：规则只有一份，在宿主那台。
 - 房间成员**不复用 dsh-bot**：那插件的 peer 依赖钉在 `0.2.0-rc.2`，本机 DSH 是 `0.2.2-rc.1`，
@@ -504,7 +505,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包（含跨站读不进来）+ LAN 模糊测试（随机字节与假凭据都改不动状态）+ 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（88 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包（含跨站读不进来）+ LAN 模糊测试（随机字节与假凭据都改不动状态）+ 房间码试错节流 + 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（91 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/

@@ -325,6 +325,40 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     return { ...stat, snapshot: viewFor(peer) }
   }
 
+  /**
+   * 房间码试错的节流。
+   *
+   * 房间码是六位 32 进制（≈1.07×10^9），靠猜本来就没什么希望；但没有节流时，同网段
+   * 一台机器可以对着 4399 打满速请求一直猜，这件事没有成本。这里按**来源地址**记最近
+   * 一分钟里失败了几次，到上限就 429，并告诉人还要等几秒。
+   *
+   * 只记失败的加入（房间码为空、没有这间屋、那是镜像屋）；成功加入会把这一格清掉。
+   * 按地址分格而不是全局计数：一个人打错十几次，不该把同屋别人挡在外面。计数只在
+   * 内存里，宿主重启就归零 —— 它挡的是「一直猜」，不是给房间码加第二把锁。
+   */
+  const JOIN_WINDOW_MS = 60_000
+  const JOIN_LIMIT = 12
+  const joinFails = new Map()
+
+  function joinWithThrottle(input, address) {
+    const now = Date.now()
+    const key = String(address || 'unknown')
+    const recent = (joinFails.get(key) ?? []).filter((at) => now - at < JOIN_WINDOW_MS)
+    if (recent.length >= JOIN_LIMIT) {
+      const wait = Math.max(1, Math.ceil((JOIN_WINDOW_MS - (now - recent[0])) / 1000))
+      fail('too_many_tries', `房间码试错太频繁了，等 ${wait} 秒再试。`)
+    }
+    try {
+      const value = joinRoom(input, address)
+      joinFails.delete(key)
+      return value
+    } catch (error) {
+      recent.push(now)
+      joinFails.set(key, recent)
+      throw error
+    }
+  }
+
   function joinRoom({ code, machine: guestMachine, self, agents, build, instance: rawInstance }, address) {
     const wanted = String(code ?? '').trim().toUpperCase()
     if (!wanted) fail('code_required', '房间码不能为空。')
@@ -600,7 +634,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       if (closed) fail('disabled', '这只宿主已经停了。')
 
       if (path === '/lan/join' && request.method === 'POST') {
-        value = joinRoom(await readJson(request), ipOf(request))
+        value = joinWithThrottle(await readJson(request), ipOf(request))
       } else if (path === '/lan/state' && request.method === 'GET') {
         const peer = requirePeer(url.searchParams.get('peerId'))
         const since = Number(url.searchParams.get('since') ?? -1)
@@ -729,7 +763,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       }
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : 'internal_error'
-      const status = code === 'peer_unknown' || code === 'room_not_found' || code === 'code_required' ? 403 : 400
+      const status = code === 'peer_unknown' || code === 'room_not_found' || code === 'code_required' ? 403 : code === 'too_many_tries' ? 429 : 400
       if (response.destroyed || response.writableEnded) return
       response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ ok: false, error: { code, message: String(error?.message ?? code).slice(0, 300) } }))
