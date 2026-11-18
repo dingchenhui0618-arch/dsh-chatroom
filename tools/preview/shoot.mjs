@@ -189,7 +189,7 @@ const shots = [
     setup: '/preview/history-live',
     waitFor: '.cr-older-btn',
     before: 'history-live-top',
-    verify: ['history-live', 'ime-enter'],
+    verify: ['history-live', 'ime-enter', 'draft-per-room'],
     caption: '翻着历史时屋里又进来话：出口上写清「几条新的」，人没被拽到底部，投影滑动留下的那道接缝也补上了',
   },
 ]
@@ -2068,6 +2068,143 @@ try {
       if (sent.error) throw new Error(`这一下回车把界面弄报错了：${sent.error}`)
       console.log(
         `verified — 面板与浮窗都认输入法：拼字中的回车不发送、草稿留着；选完词的回车照常发（${beforeIme.rows} → ${sent.rows} 条）`,
+      )
+    }
+    // 草稿是「这间屋子还没说出口的那句」：换屋子看一眼别的屋、回来还得在原处。
+    // 以前只有一份全局草稿，换屋子会跟着搬过去 —— 人在 B 屋按一下回车，A 屋那句话
+    // 就发进了 B 屋。这条同时验面板和浮窗：两边看的是同一间屋子，草稿也是同一份。
+    // 不发送任何东西，只切屋子改草稿，所以不挑屏。
+    if (wants(shot, 'draft-per-room')) {
+      const readDraft = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const active = document.querySelector('.cr-room.cr-active')
+            const box = document.querySelector('textarea.cr-textarea')
+            const sendBtn = document.querySelector('.cr-input-row .cr-btn.cr-primary')
+            const floatBox = document.querySelector('.cr-float-input')
+            const errorBar = document.querySelector('.cr-error-bar')
+            return {
+              names: [...document.querySelectorAll('.cr-room .cr-room-name')].map((node) => String(node.textContent).trim()),
+              active: active ? String(active.querySelector('.cr-room-name').textContent).trim() : null,
+              draft: box ? box.value : null,
+              composerOff: box ? box.disabled : null,
+              sendOff: sendBtn ? sendBtn.disabled : null,
+              floatDraft: floatBox ? floatBox.value : null,
+              error: errorBar ? String(errorBar.textContent).trim() : null,
+            }
+          })()`,
+        )
+      const typeDraft = (selector, text) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const box = document.querySelector(${JSON.stringify(selector)})
+            if (!box) return false
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+            box.focus()
+            setter.call(box, ${JSON.stringify(text)})
+            box.dispatchEvent(new Event('input', { bubbles: true }))
+            return true
+          })()`,
+        )
+      const clickRoom = (name) =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const rows = [...document.querySelectorAll('.cr-room')]
+            const row = rows.find((node) => String(node.querySelector('.cr-room-name').textContent).trim() === ${JSON.stringify(name)})
+            if (!row) return false
+            row.click()
+            return true
+          })()`,
+        )
+      const settle = async (check, note, tries = 60) => {
+        for (let i = 0; i < tries; i += 1) {
+          const done = await check()
+          if (done) return
+          await sleep(100)
+        }
+        throw new Error(note)
+      }
+
+      const start = await readDraft()
+      if (!start || start.names.length < 2) {
+        throw new Error(`这条要两间屋子才验得动：${JSON.stringify(start && start.names)}`)
+      }
+      if (start.error) throw new Error(`切屋子之前界面就报错了：${start.error}`)
+      const mine = start.active
+      if (!mine) throw new Error('找不到当前屋子')
+      if (start.draft !== '') await typeDraft('textarea.cr-textarea', '')
+
+      const mineDraft = '这半句是这间屋还没说出口的'
+      await typeDraft('textarea.cr-textarea', mineDraft)
+      await settle(async () => (await readDraft()).draft === mineDraft, '草稿没进输入框')
+
+      // 换到另一间能说话的屋子：半句话不许跟过去，那里也没有东西可发。
+      let other = null
+      for (const name of start.names) {
+        if (name === mine) continue
+        if (!(await clickRoom(name))) continue
+        await settle(async () => (await readDraft()).active === name, `点了「${name}」却没切过去`)
+        const there = await readDraft()
+        if (there.composerOff) continue
+        if (there.draft !== '') {
+          throw new Error(`换到「${name}」以后上一间屋的草稿跟过来了：${JSON.stringify(there.draft)}`)
+        }
+        if (there.sendOff !== true) {
+          throw new Error(`换到「${name}」以后发送按钮还能按 —— 按下去就把「${mine}」那句话发进这间屋`)
+        }
+        other = name
+        break
+      }
+      if (!other) throw new Error('没有第二间能说话的屋子，这条验不动')
+
+      // 浮窗看的是同一间屋子，展开就该看到同一句话。
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-float-pill').click()`)
+      await settle(async () => (await readDraft()).floatDraft !== null, '浮窗没展开')
+      const otherRoom = await readDraft()
+      if (otherRoom.floatDraft !== '') {
+        throw new Error(`浮窗在「${other}」里还挂着上一间屋的草稿：${JSON.stringify(otherRoom.floatDraft)}`)
+      }
+
+      await clickRoom(mine)
+      await settle(async () => (await readDraft()).active === mine, `点回「${mine}」却没切过去`)
+      const back = await readDraft()
+      if (back.draft !== mineDraft) throw new Error(`回「${mine}」以后面板草稿丢了：${JSON.stringify(back.draft)}`)
+      if (back.floatDraft !== mineDraft) {
+        throw new Error(`回「${mine}」以后浮窗没看到同一句话：${JSON.stringify(back.floatDraft)}`)
+      }
+
+      // 反过来：从浮窗里改草稿，面板跟着改（同一间屋子同一句话），换屋子以后两边都空。
+      const fromFloat = '这一句是从浮窗里补的'
+      await typeDraft('.cr-float-input', fromFloat)
+      await settle(async () => (await readDraft()).draft === fromFloat, '浮窗里写的没同步到面板输入框')
+      await clickRoom(other)
+      await settle(async () => (await readDraft()).active === other, `再点「${other}」没切过去`)
+      const crossed = await readDraft()
+      if (crossed.draft !== '' || crossed.floatDraft !== '') {
+        throw new Error(
+          `从浮窗写的那句话跟着换屋子了：面板 ${JSON.stringify(crossed.draft)}、浮窗 ${JSON.stringify(crossed.floatDraft)}`,
+        )
+      }
+      await clickRoom(mine)
+      await settle(async () => (await readDraft()).active === mine, `点回「${mine}」却没切过去`)
+      const restored = await readDraft()
+      if (restored.draft !== fromFloat || restored.floatDraft !== fromFloat) {
+        throw new Error(
+          `来回切一遍草稿就丢了：面板 ${JSON.stringify(restored.draft)}、浮窗 ${JSON.stringify(restored.floatDraft)}`,
+        )
+      }
+      await typeDraft('textarea.cr-textarea', '')
+      await settle(async () => (await readDraft()).draft === '', '草稿清不掉')
+      const cleaned = await readDraft()
+      if (cleaned.error) throw new Error(`切屋子把界面弄报错了：${cleaned.error}`)
+      console.log(
+        `verified — 草稿跟着屋子走：换到「${other}」不带过去（发送按钮也按不了）、回「${mine}」还在；浮窗与面板共用同一份`,
       )
     }
     await cdp.send('Target.closeTarget', { targetId })
