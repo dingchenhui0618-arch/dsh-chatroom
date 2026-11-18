@@ -3,3 +3,4 @@ tools/preview/public/
 *.log
 .DS_Store
 *.tgz
+.tmp-*
