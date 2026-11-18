@@ -12,7 +12,7 @@ import { project } from './project.js'
  * 先有 host 再有 speaker，但 host 需要 speaker 处理「远程的人说了句话」，
  * 所以这里用 onHumanMessage 回调而不是直接传 speaker —— 一个可变引用换掉循环依赖。
  */
-export function createLanBridge({ store, runner, log = () => {}, machine = hostname(), port } = {}) {
+export function createLanBridge({ store, runner, gate = null, log = () => {}, machine = hostname(), port } = {}) {
   let speaker = null
   const host = createLanHost({
     store,
@@ -21,10 +21,15 @@ export function createLanBridge({ store, runner, log = () => {}, machine = hostn
     port,
     onHumanMessage: (args) => speaker?.afterHumanMessage(args),
   })
-  const guest = createLanGuest({ store, runner, log })
+  const guest = createLanGuest({ store, runner, gate, log })
 
   function view(extra = {}) {
-    return project(store.state, { lan: host.status(), ...extra })
+    // 授权档位与待授权队列只给本机的界面：它们描述的是「这台机器此刻要不要执行」，
+    // 不该跟着 LAN 投影送到别的机器上。
+    return Object.assign(project(store.state, { lan: host.status(), ...extra }), {
+      auth: { level: gate ? gate.level() : 'readonly' },
+      approvals: gate ? gate.list() : [],
+    })
   }
 
   /** 宿主不在（没起来/端占用）时也要给出可读原因，而不是静默没有反应。 */

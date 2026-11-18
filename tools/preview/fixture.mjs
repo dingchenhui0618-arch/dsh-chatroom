@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '../../src/host/state.js'
 import { dispatch } from '../../src/host/plugin.js'
+import { createGate } from '../../src/host/guard.js'
 import { createLanBridge } from '../../src/host/lan-bridge.js'
 import { createSpeaker } from '../../src/host/speak.js'
 import { createBotRunner } from '../../src/host/turn.js'
@@ -174,16 +175,19 @@ async function bootSide({ dir, reply, port }) {
   const store = await Store.open(dir)
   const ctx = fakeCtx(dir, { reply })
   const runner = createBotRunner(ctx, { log })
-  const lan = createLanBridge({ store, runner, log, machine: '林岸的 MacBook' })
-  const speaker = createSpeaker({ store, runner, log, dispatchRemote: lan.enqueue })
+  // 授权门也是线上那一份：截图里的授权窗口不是画的，是真的有一条请求在等。
+  const gate = createGate({ store, notify: () => store.notify(), log })
+  const lan = createLanBridge({ store, runner, gate, log, machine: '林岸的 MacBook' })
+  const speaker = createSpeaker({ store, runner, gate, dispatchRemote: lan.enqueue, log })
   lan.setSpeaker(speaker)
   await lan.start(port)
   return {
     store,
+    gate,
     lan,
     speaker,
     snapshot: () => lan.view(),
-    command: (payload) => dispatch({ store, speaker, lan, command: payload }),
+    command: (payload) => dispatch({ store, speaker, gate, lan, command: payload }),
     dispose: () => lan.dispose(),
   }
 }
@@ -479,6 +483,9 @@ export async function bootGuest({
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'chatroom-guest-'))
   const side = await bootSide({ dir, reply })
+  // 截图里跨机派发要真的跑起来：把加入方显式开到「完全授权」。
+  // 默认那一档是只读，它演在 approve 那一屏里（宿主改成「授权后执行」）。
+  await side.command({ action: 'auth.set', input: { level: 'full' } })
   await side.command({ action: 'self.rename', input: { name } })
   if (withAgent) {
     const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
@@ -523,6 +530,34 @@ export async function warmUp(host, guest) {
   pinTimes(host.store)
   pinTimes(guest.store)
   return { mirror }
+}
+
+/**
+ * 「本机授权」那一屏：另一台机器的人说一句 @本机 agent 的话，本机档位是「授权后执行」。
+ *
+ * 卡片不是摆出来的：那一轮真的停在等授权的状态上，模型的调用要等人点了才发生，
+ * 所以这张图既演了窗口，也演了「默认之外的另一档」。
+ */
+export async function requestApproval(host, guest) {
+  const mirror = guest.snapshot().rooms.find((room) => room.remote)
+  if (!mirror) throw new Error('加入方没有镜像房间')
+  // 这一屏要拍的是「请求落在哪间屋里」：宿主那边切到同一间，
+  // 否则卡片说 Q4 复盘、面板却停在别的屋子。
+  await host.command({ action: 'room.activate', input: { roomId: mirror.remote.roomId } })
+  await host.command({ action: 'auth.set', input: { level: 'ask' } })
+  await guest.command({
+    action: 'msg.send',
+    input: { roomId: mirror.id, text: '@账期 agent 这笔 82 万缺口你按哪个账期算的？先别改数，等我确认。' },
+  })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    if (host.snapshot().approvals.length) break
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  const view = host.snapshot()
+  if (!view.approvals.length) throw new Error('待授权没有出现')
+  pinTimes(host.store)
+  return { snapshot: host.snapshot() }
 }
 
 /**

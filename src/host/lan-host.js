@@ -525,24 +525,46 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
    *
    * 单独摘出来是因为它可能被重新计一次时（见 joinRoom 里「在路上的一轮」）：
    * 那台机器重启回来了，这一轮要按新的等待窗口重新算，不能沿用上一代剩下的那几秒。
+   *
+   * 另外，对面如果开着「授权后执行」，它要等本机的人点按钮 —— 那段时间不是它的错。
+   * 它会在等之前先敲 /lan/hold 把这条的期限往后延（extendAssignment）。
    */
   function arm(row) {
     clearTimeout(row.timer)
+    const left = Math.max(0, row.deadline - Date.now())
     row.timer = setTimeout(() => {
       if (row.done) return
       row.done = true
       assignments.delete(row.id)
       wake()
       row.reject(Object.assign(new Error('对面机器没有回应。'), { code: 'lan_timeout' }))
-    }, assignTimeout())
+    }, left)
     row.timer.unref?.()
+  }
+
+  /** 一条派发的总期限上限：再多的延长也不能把「一轮」拖成没有尽头。 */
+  const MAX_ASSIGN_WAIT = 300_000
+  const MAX_HOLD = 180_000
+
+  /**
+   * 对面在等人点授权，请求把这条派发的等待往后延。
+   *
+   * 不延的话，默认 45 秒的等待窗口会先到：人还在犹豫，这边已经落了一条「没回上来」，
+   * 之后对面就算被允许，回传也只会撞上 assignment_expired。
+   */
+  function extendAssignment(row, ms) {
+    const add = Math.max(0, Math.min(MAX_HOLD, Number(ms) || 0))
+    const cap = row.createdAt + MAX_ASSIGN_WAIT
+    row.deadline = Math.min(cap, Math.max(row.deadline, Date.now()) + add)
+    arm(row)
+    return { extended: row.deadline - Date.now() }
   }
 
   /**
    * 把一个 agent 回合派发给它所在的机器。
    * 45s 没回音就落一条失败占位（speak.js 负责写），不让整轮卡死。
    */
-  function enqueue({ roomId, member, prompt }) {
+  function enqueue({ roomId, member, prompt, from = null }) {
     if (!member?.owner || member.owner === 'local') {
       return Promise.reject(Object.assign(new Error('not_remote'), { code: 'not_remote' }))
     }
@@ -560,7 +582,20 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         agentId: member.botId,
         memberName: member.name,
         prompt,
+        // 引发出这一轮的是谁：对面机器要在授权窗口里说清「谁要它做什么」。
+        // 本机的人引出来的（from.machine 为空）就填本机名 —— 对那台机器来说，
+        // 请求确实来自这台机器。
+        from: from
+          ? {
+              name: String(from.name ?? '').slice(0, 60),
+              machine: String(from.machine || machine).slice(0, 60),
+              kind: from.kind === 'bot' ? 'bot' : 'human',
+              // 引出这一轮的原话：对面那台机器的授权窗口要让人看懂「为什么要它做」。
+              text: String(from.text ?? '').slice(0, 400),
+            }
+          : null,
         createdAt: Date.now(),
+        deadline: Date.now() + assignTimeout(),
         claimedAt: null,
         done: false,
         resolve,
@@ -585,6 +620,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           agentId: row.agentId,
           memberName: row.memberName,
           prompt: row.prompt,
+          from: row.from,
         }
       }
       const left = deadline - Date.now()
@@ -593,7 +629,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     }
   }
 
-  function settleAssignment({ peerId, assignmentId, text, error }) {
+  function settleAssignment({ peerId, assignmentId, text, error, denied }) {
     const row = assignments.get(String(assignmentId ?? ''))
     if (!row || row.done) fail('assignment_expired', '这一轮已经结束了。')
     if (row.peerId !== peerId) fail('assignment_denied', '这条派发不属于这台机器。')
@@ -601,7 +637,11 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     clearTimeout(row.timer)
     assignments.delete(row.id)
     wake()
-    if (error) {
+    if (denied) {
+      // 对面那台机器的本机授权没过：这不是失败，是它的人/设置做的选择。
+      // 单独一个 code，让宿主落一条说明而不是红色失败占位（重试也还是不会过）。
+      row.reject(Object.assign(new Error('declined'), { code: 'declined', reason: String(denied).slice(0, 32) }))
+    } else if (error) {
       row.reject(Object.assign(new Error(String(error).slice(0, 200) || '对面没能回上来'), { code: 'lan_failed' }))
     } else {
       row.resolve({ text: String(text ?? '') })
@@ -702,7 +742,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       } else if (path === '/lan/reply' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)
-        if (input.error === undefined && textOf(input.text) === null) {
+        const denied = typeof input.denied === 'string' ? input.denied : ''
+        if (!denied && input.error === undefined && textOf(input.text) === null) {
           fail('bad_text', '回传的正文只能是字符串。')
         }
         value = settleAssignment({
@@ -710,7 +751,21 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           assignmentId: input.assignmentId,
           text: input.text,
           error: input.error,
+          denied,
         })
+      } else if (path === '/lan/hold' && request.method === 'POST') {
+        /**
+         * 对面在等人点授权：把这条派发的期限往后延。
+         *
+         * 它认得自己的 assignment（peerId + assignmentId 都要对上），所以这条路由不会
+         * 变成「谁都能占住一台机器的一轮」的入口。
+         */
+        const input = await readJson(request)
+        const peer = requirePeer(input.peerId)
+        const row = assignments.get(String(input.assignmentId ?? ''))
+        if (!row || row.done) fail('assignment_expired', '这一轮已经结束了。')
+        if (row.peerId !== peer.id) fail('assignment_denied', '这条派发不属于这台机器。')
+        value = extendAssignment(row, input.ms)
       } else if (path === '/lan/messages' && request.method === 'POST') {
         /**
          * 加入方往回翻历史。

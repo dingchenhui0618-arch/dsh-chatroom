@@ -21,8 +21,15 @@ process.env.DSH_CHATROOM_PORT = '0'
 
 async function boot(name, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), `lan-${name}-`))
-  const fake = fakeCtx(dir, options)
+  // 这组用例演的是「跨机派发能跑通」，不是授权门本身：所以显式开到完全授权。
+  // 默认档位是只读（新装的机器不替别人的话动工具权限），那道门有 test/auth-gate.test.mjs。
+  const { auth = 'full', ...rest } = options
+  const fake = fakeCtx(dir, rest)
   const dispose = await apply(fake.ctx)
+  if (auth) {
+    const granted = await call(fake.routes, 'command', { action: 'auth.set', input: { level: auth } })
+    if (!granted.ok) throw new Error(`设置本机授权失败：${JSON.stringify(granted.error)}`)
+  }
   return { dir, dispose, ...fake }
 }
 

@@ -81,7 +81,7 @@ function mirrorRoom(record, snapshot) {
   }
 }
 
-export function createLanGuest({ store, runner, log = () => {} } = {}) {
+export function createLanGuest({ store, runner, gate = null, log = () => {} } = {}) {
   /** linkId → {stopped, controller, rejoining} —— 只放运行时，不落盘。 */
   const runtimes = new Map()
 
@@ -401,6 +401,42 @@ export function createLanGuest({ store, runner, log = () => {} } = {}) {
         log('lan_reply_failed', error),
       )
       return
+    }
+    const runtime = runtimes.get(record.id)
+    /**
+     * 本机授权：这条是别的机器派过来的，执行前按本机档位决定。
+     *
+     * 这一道不能省。host 那边发过来的是 prompt 全文，而本机 agent 用的是本机配置的
+     * 工具权限 —— 不拦的话，房间里任何一个能触发派发的人，都能驱动这台机器上的 agent。
+     */
+    if (gate) {
+      const room = store.state.rooms.find((row) => row.id === record.localRoomId)
+      if (gate.level() === 'ask') {
+        // 先请宿主把这一轮的等待延长：默认 45 秒的窗口不够人想清楚。
+        // 老宿主没有这条路由（404）也只是回到原来的窗口，不影响正确性。
+        await postJson(
+          `${baseUrl(record.host, record.port)}/lan/hold`,
+          { peerId: record.peerId, assignmentId: assignment.id, ms: gate.waitMs() + 15_000 },
+          { timeoutMs: 8000 },
+        ).catch((error) => {
+          if (error?.code !== 'not_found') log('lan_hold_failed', error)
+        })
+      }
+      const verdict = await gate.check({
+        roomId: record.localRoomId,
+        roomName: room?.name ?? '',
+        agentName: bot.name,
+        prompt: assignment.prompt,
+        from: assignment.from,
+        signal: runtime?.controller?.signal ?? null,
+      })
+      if (!verdict.ok) {
+        // 关停 / 离开房间：这一轮已经不在了，别再往回发。
+        if (verdict.reason === 'cancelled' || verdict.reason === 'closed') return
+        log('lan_assignment_declined', { botId: bot.id, reason: verdict.reason })
+        await send({ denied: verdict.reason }).catch((error) => log('lan_reply_failed', error))
+        return
+      }
     }
     try {
       const { text } = await runner.say({ ...bot, cwd: bot.cwd ?? undefined }, assignment.prompt)

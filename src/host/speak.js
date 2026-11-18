@@ -52,7 +52,9 @@ function buildPrompt({ room, bot, at }) {
   const memberLine = room.members
     .map((member) => {
       const kind = member.kind === 'human' ? '人' : 'agent'
-      const where = member.origin?.kind === 'lan' ? `，从 LAN 进来（${member.origin.peer ?? '远程'}）` : '，本机'
+      // 说「从哪台机器来」而不是那条连接的 peer 地址：peer 是进程现发的（重启就变），
+      // 机器名才是这个模型能记住、人能对上号的东西。
+      const where = member.origin?.kind === 'lan' ? `，从 LAN 进来（${member.origin.machine || member.origin.peer || '远程'}）` : '，本机'
       const role = member.role ? `，${member.role}` : ''
       return `- ${member.name}（${kind}${role}${where}）`
     })
@@ -89,7 +91,7 @@ function buildPrompt({ room, bot, at }) {
     .join('\n')
 }
 
-export function createSpeaker({ store, runner, dispatchRemote = null, log = () => {} }) {
+export function createSpeaker({ store, runner, dispatchRemote = null, gate = null, log = () => {} }) {
   const running = new Set()
   const aborts = new Map()
   /** roomId → 这一轮的身份。用来分辨「收尾的是我吗」，避免旧回合把新回合收掉。 */
@@ -97,6 +99,46 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
   /** 发言中间收到的人消息：不丢，排到这一轮结束后接着处理。 */
   const pending = new Map()
   const PENDING_LIMIT = 8
+
+  /**
+   * 这一轮是谁的话引出来的。
+   *
+   * 只关心一件事：它是不是从别的机器来的。非本机的指挥要过本机授权那道门
+   * （见 guard.js）；本机的人自己说话、自己点重试、自己点全员轮次，都不问。
+   */
+  function triggerOf(message) {
+    if (!message) return { kind: 'local', name: null, machine: null, authorKind: 'human' }
+    const lan = message.origin?.kind === 'lan'
+    return {
+      kind: lan ? 'lan' : 'local',
+      name: message.authorName ?? null,
+      machine: lan ? message.origin.machine || message.origin.peer || null : null,
+      authorKind: message.authorKind === 'bot' ? 'bot' : 'human',
+      // 引出这一轮的原话：授权窗口里「对方说了什么」比整段 prompt 好读得多。
+      text: String(message.text ?? '').slice(0, 400),
+    }
+  }
+
+  /** 「这一轮没执行」的房间说明：不是失败占位，也不是谁说的话。 */
+  const declineNote = (reason) =>
+    reason === 'readonly'
+      ? '本机授权是「只读」，这条远程指挥没有执行。要接受，在那台机器的成员列底部把「本机授权」改成「授权后执行」或「完全授权」。'
+      : reason === 'timeout'
+        ? '本机的人没有在时限内确认，这条远程指挥没有执行。'
+        : '本机的人拒绝了这条远程指挥，没有执行。'
+
+  function postDecline(roomId, botId, botName, reason) {
+    store.commit((state) => {
+      const room = getRoom(state, roomId)
+      if (!room) return
+      postMessage(state, {
+        roomId,
+        authorId: botId,
+        text: `${botName}：${declineNote(reason)}`,
+        status: 'notice',
+      })
+    })
+  }
 
   function roomOrFail(roomId) {
     const room = store.inspect((state) => getRoom(state, roomId))
@@ -112,7 +154,7 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     })
   }
 
-  async function speakOne({ roomId, botId, at, depth, budget, spoke, token }) {
+  async function speakOne({ roomId, botId, at, depth, budget, spoke, token, trigger = null }) {
     if (budget.left <= 0) return
     // 一轮之内同一个人只说一次：主持人的 @ 和全员队列点到同一个人时，
     // 后到的那次直接跳过，把预算留给还没开口的人。
@@ -134,14 +176,40 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     const controller = new AbortController()
     aborts.set(roomId, controller)
     try {
-      const prompt = buildPrompt({ room: roomOrFail(roomId), bot, at })
+      const roomNow = roomOrFail(roomId)
+      const prompt = buildPrompt({ room: roomNow, bot, at })
+      // 本机授权：这句话是别的机器上的人/agent 引出来的，那就先问本机的人。
+      // 本机的人自己 @、自己点重试、自己点全员轮次都不问 —— 否则每句都要点一次。
+      if (!remote && gate && trigger?.kind === 'lan') {
+        setActivity(roomId, { awaiting: bot.name })
+        let verdict
+        try {
+          verdict = await gate.check({
+            roomId,
+            roomName: roomNow.name,
+            agentName: bot.name,
+            prompt,
+            from: trigger,
+            signal: controller.signal,
+          })
+        } finally {
+          setActivity(roomId, { awaiting: null })
+        }
+        if (!verdict.ok) {
+          if (verdict.reason === 'cancelled' || verdict.reason === 'closed') return
+          // 只读 / 拒绝 / 超时：屋里留一条说明（notice），不是失败占位 ——
+          // 模型没坏、网络没坏，是这台机器没授权。
+          postDecline(roomId, botId, bot.name, verdict.reason)
+          return
+        }
+      }
       let text
       if (remote) {
         if (typeof dispatchRemote !== 'function') {
           fail('lan_unavailable', '这台机器没有连上局域网，无法请远程 agent 发言。')
         }
         const result = await withAbort(
-          dispatchRemote({ roomId, member: bot, prompt, signal: controller.signal }),
+          dispatchRemote({ roomId, member: bot, prompt, from: trigger, signal: controller.signal }),
           controller.signal,
         )
         text = result?.text
@@ -156,10 +224,16 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
           if (budget.left <= 0) break
           // 这一轮已经被「停下」了：接力也别再往下传。
           if (epochs.get(roomId) !== token) break
-          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget, spoke, token })
+          await speakOne({ roomId, botId: target.id, at: 'mention', depth: depth + 1, budget, spoke, token, trigger })
         }
       }
     } catch (error) {
+      // 对面的机器自己没过授权那道门：那是它的选择，不是「它坏了」。
+      // 落一条说明，而不是红色失败占位 —— 否则重试按钮会一直在，点了也还是不过。
+      if (error?.code === 'declined') {
+        postDecline(roomId, botId, bot.name, String(error.reason ?? 'denied'))
+        return
+      }
       log('bot_turn_failed', { botId, error })
       const alive = store.inspect((state) => getRoom(state, roomId))
       // 屋子已经没了（被解散、或镜像那边收到解散），或者用户按了「停下这一轮」：
@@ -262,7 +336,11 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     if (rules.mention) for (const member of mentionedBots(room, message)) push(member)
     if (rules.roundRobin) for (const member of botsOf(room)) push(member)
     if (!queue.length) return false
-    run(roomId, queue, { kind: rules.chairId && queue[0]?.id === rules.chairId ? 'chair' : 'mention' })
+    run(roomId, queue, {
+      kind: rules.chairId && queue[0]?.id === rules.chairId ? 'chair' : 'mention',
+      // 这条人消息是从哪台机器来的：别的机器来的话，本机 agent 的回合要先过授权门。
+      trigger: triggerOf(message),
+    })
     return true
   }
 
@@ -284,7 +362,8 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     const room = roomOrFail(roomId)
     const queue = botsOf(room)
     if (!queue.length) fail('no_agents')
-    return run(roomId, queue, { kind: 'round' }, true)
+    // 人手点的：本机的人已经用这个动作表达过意图，不再问一次。
+    return run(roomId, queue, { kind: 'round', trigger: { kind: 'local', name: null, machine: null, authorKind: 'human' } }, true)
   }
 
   /** 某条 agent 回复失败后重来一次 —— 只重跑那一个 agent，不惊动别人。 */
@@ -292,17 +371,18 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
     const room = roomOrFail(roomId)
     const member = getMember(room, memberId)
     if (!member || member.kind !== 'bot') fail('not_agent_message')
-    return run(roomId, [member], { kind: 'round' }, true)
+    // 同上：重试是本机的人点的，不是远程指挥。
+    return run(roomId, [member], { kind: 'round', trigger: { kind: 'local', name: null, machine: null, authorKind: 'human' } }, true)
   }
 
-  function run(roomId, queue, { kind }, awaitIt = false) {
+  function run(roomId, queue, { kind, trigger = null }, awaitIt = false) {
     if (running.has(roomId)) fail('room_busy', '这间屋子正在发言，等这一轮结束。')
     const budget = { left: Math.max(1, roomOrFail(roomId).rules.maxSpeakers) }
     const token = Symbol('round')
     const spoke = new Set()
     running.add(roomId)
     epochs.set(roomId, token)
-    setActivity(roomId, { speaking: [], kind, startedAt: new Date().toISOString() })
+    setActivity(roomId, { speaking: [], awaiting: null, kind, startedAt: new Date().toISOString() })
     const task = (async () => {
       try {
         for (const [index, member] of queue.entries()) {
@@ -317,6 +397,7 @@ export function createSpeaker({ store, runner, dispatchRemote = null, log = () =
             budget,
             spoke,
             token,
+            trigger,
           })
         }
       } finally {

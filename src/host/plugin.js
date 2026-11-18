@@ -15,6 +15,7 @@ import {
 } from './rooms.js'
 import { createBotRunner } from './turn.js'
 import { createSpeaker } from './speak.js'
+import { createGate, LEVELS } from './guard.js'
 import { createLanBridge } from './lan-bridge.js'
 import { markApplied } from './code.js'
 import { pageMessages, project } from './project.js'
@@ -69,7 +70,7 @@ async function messagesPage({ store, lan, payload }) {
   return lan.page({ roomId: room.id, beforeSeq: payload?.beforeSeq, limit: payload?.limit })
 }
 
-export async function dispatch({ store, speaker, lan = null, command }) {
+export async function dispatch({ store, speaker, gate = null, lan = null, command }) {
   const action = String(command?.action ?? '')
   const input = command?.input && typeof command.input === 'object' ? command.input : {}
   const state = store.state
@@ -244,6 +245,26 @@ export async function dispatch({ store, speaker, lan = null, command }) {
       speaker.stop(input.roomId)
       break
     }
+    case 'auth.set': {
+      /**
+       * 本机授权三档：只读 / 授权后执行 / 完全授权。
+       *
+       * 只影响这台机器：别的机器派过来的回合要不要执行，是每台机器自己的事。
+       * 所以它不跟着房间投影走，也不许在镜像房间那边替宿主改（那是另一台机器的安全设置）。
+       */
+      if (!gate) throw Object.assign(new Error('授权服务不可用'), { code: 'gate_unavailable' })
+      const level = String(input.level ?? '')
+      if (!LEVELS.includes(level)) throw Object.assign(new Error('未知的授权档位'), { code: 'bad_level' })
+      gate.setLevel(level)
+      break
+    }
+    case 'auth.answer': {
+      if (!gate) throw Object.assign(new Error('授权服务不可用'), { code: 'gate_unavailable' })
+      const decided = gate.answer({ id: input.id, allow: Boolean(input.allow) })
+      // 已经超时或被另一处点掉：不是错误，界面上那张卡本来就该自己消失。
+      if (!decided) throw Object.assign(new Error('这条请求已经结束了'), { code: 'approval_expired' })
+      break
+    }
     case 'read.mark': {
       const target = roomOf(input.roomId)
       if (target?.remote) {
@@ -395,10 +416,12 @@ export function apply(ctx) {
     const dir = join(profile.dir, 'dsh-chatroom')
     const store = await Store.open(dir)
     const runner = createBotRunner(ctx, { log })
+    // store.notify()：待授权队列只在内存里，界面靠 revision 变化被叫醒（见 state.js）。
+    const gate = createGate({ store, notify: () => store.notify(), log })
     // 先有 bridge 才有「远程成员的回合该怎么派出去」；speaker 反过来要交给 bridge，
     // 这样宿主收到局域网消息时走的还是同一个调度器（三条规则的预算只有一份）。
-    const lan = createLanBridge({ store, runner, log })
-    const speaker = createSpeaker({ store, runner, dispatchRemote: lan.enqueue, log })
+    const lan = createLanBridge({ store, runner, gate, log })
+    const speaker = createSpeaker({ store, runner, gate, dispatchRemote: lan.enqueue, log })
     lan.setSpeaker(speaker)
     const disposers = []
     let closed = false
@@ -429,7 +452,7 @@ export function apply(ctx) {
         } else if (endpoint === 'messages') {
           result = { ok: true, value: await messagesPage({ store, lan, payload }) }
         } else if (endpoint === 'command') {
-          result = { ok: true, value: await dispatch({ store, speaker, lan, command: payload }) }
+          result = { ok: true, value: await dispatch({ store, speaker, gate, lan, command: payload }) }
         } else if (endpoint === 'watch') {
           await waitForChange(store, Number(payload.since ?? -1), request.signal)
           result = { ok: true, value: lan.view() }
@@ -464,6 +487,8 @@ export function apply(ctx) {
       markApplied()
       return async () => {
         closed = true
+        // 还在等本机点按钮的那几条，随插件一起作废：留着只会让回合收不干净。
+        gate.dispose()
         await lan.dispose()
         for (const dispose of disposers.splice(0).reverse()) {
           try {
@@ -475,6 +500,7 @@ export function apply(ctx) {
         await store.close()
       }
     } catch (error) {
+      gate.dispose()
       await lan.dispose()
       for (const dispose of disposers.splice(0).reverse()) {
         try {

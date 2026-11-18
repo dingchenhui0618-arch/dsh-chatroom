@@ -385,7 +385,8 @@ export function unreadOf(room, memberId) {
 /** 给模型看的对话记录：跳过失败占位与房间外的东西。 */
 export function transcriptOf(room, { limit = 24, selfId = 'me' } = {}) {
   return room.messages
-    .filter((message) => message.status !== 'error')
+    // notice 是「这一轮没执行」的说明，不是谁说过的话：给模型看只会让它以为有人说过。
+    .filter((message) => message.status !== 'error' && message.status !== 'notice')
     .slice(-limit)
     .map((message) => {
       // 身份按 authorKind 说，来源按 origin 说 —— 这是两件事。

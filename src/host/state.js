@@ -23,6 +23,9 @@ export function emptyState() {
     revision: 0,
     createdAt: new Date().toISOString(),
     self: { id: 'me', name: '我' },
+    // 本机授权：另一台机器派过来的回合要不要执行。三档见 guard.js。
+    // 默认只读 —— 新装的机器不替别人的话动本机的工具权限。
+    auth: { level: 'readonly' },
     rooms: [],
     bots: [],
     // 加入过的局域网房间。宿主那边的 peerId 每次握手都换，所以这里只留
@@ -45,6 +48,11 @@ export function validateState(value) {
   // links 是后加的字段：旧 state.json 没有它，读成空数组即可，不必升 schema。
   if (value.links === undefined) value.links = []
   if (!Array.isArray(value.links)) fail('malformed_state')
+  // auth 也是后加的：老 state.json 没有它，按最保守的「只读」补上，绝不默认放行。
+  if (value.auth === undefined || value.auth === null || typeof value.auth !== 'object') {
+    value.auth = { level: 'readonly' }
+  }
+  if (!['readonly', 'ask', 'full'].includes(value.auth.level)) value.auth.level = 'readonly'
   return value
 }
 
@@ -103,6 +111,26 @@ export class Store {
   /** 只读事务：不改 revision、不落盘。 */
   inspect(read) {
     return read(this.#state)
+  }
+
+  /**
+   * 叫醒等着的界面：有新情况（有人要本机授权），但状态本身没变。
+   *
+   * 授权队列只活在内存里，不写 state.json —— 一条待授权是「此刻」的事，
+   * 重启之后那个回合早就不在了，落盘只会让界面重启后挂着一张点不动的卡片。
+   * 但客户端的 watch 只认 revision，所以这里把 revision 推一格：不落盘、
+   * 不触发保存，纯粹是给长轮询一个「现在去看看」的信号。
+   */
+  notify() {
+    if (this.#closed) return
+    this.#state.revision += 1
+    for (const listener of this.#listeners) {
+      try {
+        listener(this.#state.revision)
+      } catch {
+        /* 监听器自己的错误不该破坏通知 */
+      }
+    }
   }
 
   subscribe(listener) {

@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootFixture, bootGuest, joinThirdMachine, pinTimes, warmUp } from './fixture.mjs'
+import { bootFixture, bootGuest, joinThirdMachine, pinTimes, requestApproval, warmUp } from './fixture.mjs'
 // 往回翻历史这一屏走的是宿主同一个分页函数：预览里的翻页不是给界面塞假数据，
 // 而是真的从房间记录里切出更早那一页。
 import { pageMessages } from '../../src/host/project.js'
@@ -229,6 +229,62 @@ function serve(side, port, { nudge = null } = {}) {
         const old = await host.oldPeer()
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, rooms: old.snapshot.rooms.length }))
+        return
+      }
+
+      // 截图用：「本机授权」那一屏 —— 加入方的人说一句 @宿主 agent 的话，
+      // 宿主的档位是「授权后执行」，这一轮就真的停在等本机点按钮的地方。
+      if (nudge && url.pathname === '/preview/approval') {
+        usage.writes += 1
+        const asked = await requestApproval(host, guest)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, approvals: asked.snapshot.approvals.length }))
+        return
+      }
+
+      // 授权那屏演完：点「允许一次」，让这一轮真的跑完，再把档位放回默认只读。
+      // 允许而不是拒绝 —— 拒绝会在屋里留一条「没执行」的说明，而下一屏 gone 正是这间屋子。
+      if (nudge && url.pathname === '/preview/approve-done') {
+        usage.writes += 1
+        const before = host.snapshot().rooms.find((row) => row.id === host.roomId)
+        const wasSaid = before ? before.messages.filter((row) => row.status === 'sent').length : 0
+        for (const card of host.snapshot().approvals) {
+          await host.command({ action: 'auth.answer', input: { id: card.id, allow: true } })
+        }
+        await host.command({ action: 'auth.set', input: { level: 'readonly' } })
+        // 等这一句真的落库再回：下一屏拍的时候屋里不该还挂着「正在发言」。
+        for (let i = 0; i < 150; i += 1) {
+          const room = host.store.state.rooms.find((row) => row.id === host.roomId)
+          if (room && room.messages.filter((row) => row.status === 'sent').length > wasSaid && !room.activity) break
+          await new Promise((resolve) => setTimeout(resolve, 40))
+        }
+        // 加入方那边是镜像：它也跟上了再回，否则下一屏（gone 在加入方拍）会少这一条，
+        // 同一份代码跑两次就能拍出两张不同的图。
+        for (let i = 0; i < 120; i += 1) {
+          const room = host.store.state.rooms.find((row) => row.id === host.roomId)
+          const mirror = guest ? guest.snapshot().rooms.find((row) => row.remote) : null
+          if (!guest || !room || (mirror && mirror.nextSeq >= room.nextSeq)) break
+          await new Promise((resolve) => setTimeout(resolve, 40))
+        }
+        // 钉时间之后还得等镜像真的换成钉住的那几条：在途的那次 /lan/state 可能带着
+        // 钉之前的时间，晚一步覆盖回来 —— 加入方那屏的房间列表就会显示真实时钟（17:44），
+        // 同一份代码两次截图差一分钟。所以钉一轮、等一拍、对一次，没对上再来。
+        for (let i = 0; i < 40; i += 1) {
+          pinTimes(host.store)
+          if (guest) pinTimes(guest.store)
+          await new Promise((resolve) => setTimeout(resolve, 120))
+          const room = host.store.state.rooms.find((row) => row.id === host.roomId)
+          const mirror = guest ? guest.snapshot().rooms.find((row) => row.remote) : null
+          if (!room || !mirror) break
+          const last = room.messages[room.messages.length - 1]
+          const mirrored = mirror.messages[mirror.messages.length - 1]
+          if (last && mirrored && last.at === mirrored.at && mirror.nextSeq >= room.nextSeq) break
+        }
+        pinTimes(host.store)
+        if (guest) pinTimes(guest.store)
+        if (third) pinTimes(third.store)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, approvals: host.snapshot().approvals.length }))
         return
       }
 

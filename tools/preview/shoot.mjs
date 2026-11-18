@@ -70,6 +70,7 @@ const shots = [
     name: 'agent-edit',
     view: 'panel',
     waitFor: '.cr-msg',
+    settle: 'read',
     open: '改',
     caption: 'agent 的名字与职责随时可改：职责决定它怎么说话，所以建完之后还得能接着改',
   },
@@ -85,6 +86,9 @@ const shots = [
     name: 'join-error',
     view: 'panel',
     waitFor: '.cr-msg',
+    // 未读徽标是「面板可见时自动清零」的：清掉那一下和拍照之间会差一帧，
+    // 同一份代码两次就能拍出带徽标和不带徽标两张 —— 等它结算完再拍。
+    settle: 'read',
     before: 'join-fail',
     verify: 'join-error',
     caption: '加入失败时：直说连不上哪台、填过的地址和房间码留着能改；失败的加入不会在列表里留下半间屋子',
@@ -93,6 +97,7 @@ const shots = [
     name: 'rules',
     view: 'rules',
     waitFor: '.cr-msg',
+    settle: 'read',
     open: '规则',
     caption: '三条发言规则并行开关：被 @ 必回、全员轮次、主持人指派，共用发言预算',
   },
@@ -158,11 +163,23 @@ const shots = [
     caption: 'agent 没回上来时：占位消息留在房里，底下一个「重试」只重跑它一个，不惊动别人',
   },
   {
+    name: 'approve',
+    // 演完当场点「允许一次」把这一轮放过去（下一屏 gone 就在这间屋子拍），
+    // 所以它不能排在最后：最后一屏要留给会真发一句的 ime-enter。
+    view: 'panel',
+    setup: '/preview/approval',
+    waitFor: '.cr-approve',
+    settle: 'read',
+    verify: 'approve',
+    caption: '别的机器要在这台机器上跑一个 agent 回合：先说清是谁、哪台机器、要它做什么，点了才跑；默认那一档是只读',
+  },
+  {
     name: 'gone',
     port: guestPort,
     view: 'panel',
     setup: '/preview/dissolve',
     waitFor: 'textarea[disabled]',
+    settle: 'read',
     caption: '宿主解散后加入方看到的样子：历史还在、输入锁住、右栏写下原因并只留「从列表移除」',
   },
   {
@@ -170,6 +187,7 @@ const shots = [
     view: 'panel',
     setup: '/preview/no-reply',
     waitFor: '.cr-hint',
+    settle: 'read',
     verify: 'no-reply',
     caption: '说了一句、谁都没接的时候：界面直接说是「没叫到人」，而不是让人对着一片安静以为插件坏了',
   },
@@ -178,6 +196,7 @@ const shots = [
     view: 'panel',
     setup: '/preview/history',
     waitFor: '.cr-older-btn',
+    settle: 'read',
     before: 'history-top',
     verify: 'history',
     caption: '说满 200 句之后：更早的话还能一句一句翻回来，而不是只剩一句「只显示最近 200 条」',
@@ -724,6 +743,42 @@ try {
       }
     }
     await sleep(250)
+    // 输入框里那条光标会闪：它落在哪一相位取决于按快门的瞬间。和动画一样，
+    // 截图里不该有这种活的东西 —— 把 caret 变透明（焦点态本身保留）。
+    await evaluate(
+      cdp,
+      sessionId,
+      `(() => {
+        let style = document.getElementById('cr-shot-caret')
+        if (!style) {
+          style = document.createElement('style')
+          style.id = 'cr-shot-caret'
+          style.textContent = 'input,textarea,[contenteditable]{caret-color:transparent!important}'
+          document.head.appendChild(style)
+        }
+        return true
+      })()`,
+    )
+    // 授权那屏右下角是个活的倒计时：同一份代码隔几秒重跑就会差一个数字，
+    // docs/ 里那张图于是永远对不上。停掉计时、把初始值（宿主给的 90 秒）钉回去再拍。
+    // 「等待授权」那行的三个点是 CSS 无限动画，同样会把两次截图错开半帧 —— 一并冻住。
+    if (shot.name === 'approve') {
+      await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          for (let id = 1; id < 1000; id += 1) clearInterval(id)
+          const nodes = document.querySelectorAll('.cr-approve-count')
+          if (nodes.length) nodes[nodes.length - 1].textContent = '90s'
+          document.querySelectorAll('.cr-dot').forEach((node) => {
+            node.style.animation = 'none'
+            node.style.opacity = '0.5'
+          })
+          return true
+        })()`,
+      )
+      await sleep(80)
+    }
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId)
     const file = join(outDir, `${shot.name}.png`)
     await writeFile(file, Buffer.from(data, 'base64'))
@@ -2506,6 +2561,66 @@ try {
       console.log(
         `verified — 打 @ 就开候选（${target}）、随打随筛、回车挑出「${expectDraft}」；发出去的正文只有一个 @，那个 agent 真的接了话`,
       )
+    }
+
+    // 本机授权：卡片必须说清「谁、哪台机器、要哪个 agent 做什么」，两个按钮都得在，
+    // 成员列底下的三档要停在「授权后执行」，并且这一屏真的挂着一条待授权（不是画上去的）。
+    if (wants(shot, 'approve')) {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          const card = document.querySelector('.cr-approve')
+          const seg = [...document.querySelectorAll('.cr-auth-btn')].map((node) => ({
+            label: text(node),
+            on: node.getAttribute('aria-pressed') === 'true',
+          }))
+          if (!card) return { card: false, seg }
+          const rect = card.getBoundingClientRect()
+          return {
+            card: true,
+            title: text(card.querySelector('.cr-approve-eyebrow')),
+            who: text(card.querySelector('.cr-approve-who')),
+            meta: text(card.querySelector('.cr-approve-meta')),
+            quote: text(card.querySelector('.cr-approve-quote')),
+            body: text(card.querySelector('.cr-approve-body')),
+            buttons: [...card.querySelectorAll('button')].map(text),
+            countdown: text([...card.querySelectorAll('.cr-approve-count')].pop()),
+            seg,
+            note: text(document.querySelector('.cr-auth-note')),
+            scope: text(document.querySelector('.cr-auth-scope')),
+            inViewport: rect.top >= 0 && rect.bottom <= window.innerHeight && rect.left >= 0 && rect.right <= window.innerWidth,
+            wide: rect.width >= 380 && rect.width <= 520,
+            rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+          }
+        })()`,
+      )
+      if (!state.card) throw new Error('那一屏没有待授权卡片：这一轮根本没停下来等人')
+      if (state.title !== '远程执行请求') throw new Error(`卡片标题不对：${JSON.stringify(state.title)}`)
+      if (!/账期 agent/.test(state.who)) throw new Error(`卡片没说清要哪个 agent 跑：${JSON.stringify(state.who)}`)
+      for (const expected of ['周荻的 MacBook', '周荻', 'Q4 复盘']) {
+        if (!state.meta.includes(expected)) throw new Error(`卡片没说清「${expected}」：${JSON.stringify(state.meta)}`)
+      }
+      if (!/82 万/.test(state.quote)) throw new Error(`卡片没给出对方那句话：${JSON.stringify(state.quote)}`)
+      if (!/现在轮到你了/.test(state.body)) throw new Error(`卡片没给出完整请求：${JSON.stringify(state.body.slice(0, 80))}`)
+      if (state.buttons.join('|') !== '允许一次|拒绝') throw new Error(`按钮不对：${JSON.stringify(state.buttons)}`)
+      if (state.countdown !== '90s') throw new Error(`倒计时没钉住：${JSON.stringify(state.countdown)}`)
+      if (state.seg.map((row) => row.label).join('|') !== '只读|授权后执行|完全授权') {
+        throw new Error(`三档没排出来：${JSON.stringify(state.seg)}`)
+      }
+      if (!state.seg[1].on || state.seg[0].on || state.seg[2].on) {
+        throw new Error(`档位没停在「授权后执行」：${JSON.stringify(state.seg)}`)
+      }
+      if (!/问你一次/.test(state.note)) throw new Error(`底下的说明没解释这一档：${JSON.stringify(state.note)}`)
+      if (state.scope !== '只影响这台机器') throw new Error(`没写清它只管这台机器：${JSON.stringify(state.scope)}`)
+      if (!state.inViewport) throw new Error(`授权卡片跑到视口外了：人点不到 ${JSON.stringify(state.rect)} / ${JSON.stringify(state.viewport)}`)
+      if (!state.wide) throw new Error(`授权卡片宽度不合适：${state.wide}`)
+      console.log('verified — 授权窗口说清谁/哪台机器/要哪个 agent 做什么，两个按钮都在，成员列停在「授权后执行」；这一轮真挂在等人点')
+      // 演完点「允许一次」把这一轮放过去：下一屏 gone 就在这间屋子拍，
+      // 拒绝会在屋里留一条「没执行」的说明，那张图就不该带着它。
+      await fetch(`http://127.0.0.1:${port}/preview/approve-done`)
     }
 
     await cdp.send('Target.closeTarget', { targetId })
