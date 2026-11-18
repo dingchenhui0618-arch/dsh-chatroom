@@ -602,6 +602,35 @@ try {
       )
       await sleep(200)
       await sayInRoom(cdp, sessionId, ['这两句是翻着历史时进来的', '第二句也一样'])
+      // 这两句是界面里真发出去的，at 是**真实时钟**：房间列表右上角那句 HH:MM 于是每次都不同 ——
+      // 同一份代码重跑两次会得到两张不同的 PNG。把时间重新钉回固定档，等界面真的换成它再拍。
+      const pinned = await (await fetch(`http://127.0.0.1:${port}/preview/pin`)).json()
+      const activeTitle = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const node = document.querySelector('.cr-room.cr-active .cr-room-name')
+          return node ? String(node.textContent).trim() : null
+        })()`,
+      )
+      const wantClock = (pinned.rooms ?? []).find((room) => room.name === activeTitle)?.clock ?? null
+      if (!wantClock) throw new Error(`钉完时间对不上当前屋子：${JSON.stringify({ activeTitle, rooms: pinned.rooms })}`)
+      let shownClock = null
+      for (let i = 0; i < 60; i += 1) {
+        shownClock = await evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const node = document.querySelector('.cr-room.cr-active .cr-room-time')
+            return node ? String(node.textContent).trim() : null
+          })()`,
+        )
+        if (shownClock === wantClock) break
+        await sleep(100)
+      }
+      if (shownClock !== wantClock) {
+        throw new Error(`房间列表那格时间没换成钉住的值：应该是 ${wantClock}，实际是 ${JSON.stringify(shownClock)}`)
+      }
       let label = null
       for (let i = 0; i < 80; i += 1) {
         label = await evaluate(
@@ -1103,8 +1132,33 @@ try {
         return false
       }
 
+      const clearName = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const el = document.querySelector('.cr-name-row input')
+            if (!el) return false
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+            el.focus()
+            setter.call(el, '')
+            el.dispatchEvent(new Event('input', { bubbles: true }))
+            return true
+          })()`,
+        )
+
       const before = await readName()
       if (before !== '林岸') throw new Error(`名字输入框里应该是本机这个人的名字，实际是 ${JSON.stringify(before)}`)
+
+      // 先删干净。这里曾经有个很难受的毛病：删掉最后一个字，输入框立刻把旧名字顶回来，
+      // 人再打字就变成「旧名字 + 新名字」—— 在默认名字叫「我」的机器上表现为
+      // 「这个名字里必须带一个我」。空就是空，不能自己长回来。
+      await clearName()
+      await sleep(150)
+      const emptied = await readName()
+      if (emptied !== '') {
+        throw new Error(`把名字删干净之后输入框又长回了 ${JSON.stringify(emptied)}，人接着打字就会带着它`)
+      }
 
       await typeName('林岸·改')
       if (!(await waitForMember('林岸·改', '林岸'))) {
@@ -1117,7 +1171,7 @@ try {
         throw new Error(`名字没改回去，后面的截图会带着脏状态：${JSON.stringify(await memberNames())}`)
       }
       if ((await readName()) !== '林岸') throw new Error('改完之后输入框没有回到当前名字')
-      console.log('verified — 名字可改：成员列当场换名字，再改回来')
+      console.log('verified — 名字可改：删干净不会自己长回来，成员列当场换名字，再改回来')
     }
 
     // 邀请条上那句地址是对方唯一要抄的东西，得和宿主此刻的真实网卡排出来的一致：

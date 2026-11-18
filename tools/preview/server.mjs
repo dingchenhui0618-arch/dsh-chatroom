@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootFixture, bootGuest, joinThirdMachine, warmUp } from './fixture.mjs'
+import { bootFixture, bootGuest, joinThirdMachine, pinTimes, warmUp } from './fixture.mjs'
 // 往回翻历史这一屏走的是宿主同一个分页函数：预览里的翻页不是给界面塞假数据，
 // 而是真的从房间记录里切出更早那一页。
 import { pageMessages } from '../../src/host/project.js'
@@ -167,6 +167,27 @@ function serve(side, port, { nudge = null } = {}) {
         await host.history('季度对账存档（翻着看时来了新消息）', '三个月的对账记录：人停在上头，屋里又进来话')
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
+        return
+      }
+
+      // 截图脚本在浏览器里真发过话之后，把消息时间重新钉回固定档。
+      //
+      // 人在界面里发出的那句话，at 是**真实时钟**：房间列表右上角那句 HH:MM 于是每次都不同，
+      // 同一份代码重跑两次就得到两张不同的 PNG。钉完把每间屋子最新的那条时间回给脚本，
+      // 它就等界面真的换成这个时间再拍 —— 截图既稳定、又不是「摆拍」。
+      if (url.pathname === '/preview/pin') {
+        pinTimes(host.store)
+        if (guest) pinTimes(guest.store)
+        if (third) pinTimes(third.store)
+        const pad = (n) => (n < 10 ? '0' + n : String(n))
+        const rooms = host.store.state.rooms.map((room) => {
+          const last = room.messages[room.messages.length - 1]
+          if (!last) return { name: room.name, clock: null }
+          const at = new Date(last.at)
+          return { name: room.name, clock: pad(at.getHours()) + ':' + pad(at.getMinutes()) }
+        })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, rooms }))
         return
       }
 
