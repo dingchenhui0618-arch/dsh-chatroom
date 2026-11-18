@@ -70,6 +70,9 @@
   （只在内存里，进程结束即失效）。
 - 原子写：先写 `state.json.tmp` 再 `rename`，断电最多留一个 tmp，不会写出半个 `state.json`；
   读坏了会另存成 `state.json.broken-<时间戳>` 再当空状态起来，不会静默吞掉旧文件。
+  这三条不是口头承诺：`test/state.test.mjs` 真写盘、真 rename、真重开地验过 —— 坏文件留档
+  且内容就是原字节、`schema` 比自己新的文件**原地不动**（抛 `unsupported_schema`，降级不
+  吃掉新版本数据）、落盘后不留 `.tmp`。
 
 ## 明确不做
 
