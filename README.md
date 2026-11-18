@@ -404,6 +404,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | 项目 | 状态 | 证据 |
 | --- | --- | --- |
 | 房间/成员/消息状态机 | ✅ 已验证 | `test/rooms.test.mjs` 13 用例 |
+| **关掉再打开，屋子和聊天记录还在**（这是插件的承诺本身：状态是 `<profile>/dsh-chatroom/state.json` 一份整体快照） | ✅ 已验证 | `test/state.test.mjs` 5 用例，一律真写盘、真 rename、真重开，不 mock fs：①建屋子 + 两人 + 两句中文消息 + 已读游标 → `flush` → 关 → 重开：房间名/主题/`nextSeq`/seq 序列/成员职责/`sessionId`/未读数都是原值；②写到一半的 `state.json`（断电最可能的形状）→ `Store.open` 不抛，坏文件改名成 `state.json.broken-<ts>` 且内容就是原字节，从空状态起步也能继续写；③`schema: 99` 的「未来版本」文件 → 抛 `unsupported_schema` 且原文件一个字节没动（降级不该吃掉新版本的数据）；④`commit` 不手动 `flush` 也会在 120ms 去抖后自己落盘，目录里不留 `.tmp`；⑤连改五次只留最后一份完整状态。反证：把「坏文件改名留档」那行换成 `void 0` → 第 2 条当场红；把 `schema` 校验去掉 → 第 3 条当场红 |
 | Host 端到端（建房间 → 加 agent → @ 它 → 它真的被驱动 → 回复按 seq 落库） | ✅ 已验证（假模型） | `test/host.integration.test.mjs` 16 用例 |
 | 三条规则调度 + 预算闸门 | ✅ 已验证 | 同上：@ 才回 / 全员一轮 / 未 @ 不白烧调用 |
 | 三条规则**同时开**：一轮内同一人只说一次（主持人 @ 的和全员队列点到的人不会说两遍、不吃掉两份预算） | ✅ 已验证 | 同上：三人屋全开规则，断言恰好 A、B、C 各一次、共 3 次驱动 |
