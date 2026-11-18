@@ -1670,13 +1670,60 @@ try {
         throw new Error(`从拖过去的胶囊展开后没留在原地：${JSON.stringify(openedAt)}`)
       }
 
+      // 6. 浮窗不是一块光秃秃的记录：头像 / 署名 / 时间 / 身份行 / @ 候选都得住在这里；
+      //    收起以后那颗胶囊也得带着最后一句 —— 这几样正是这一版重做的内容，掉一个就是退回去。
+      const content = await evaluate(cdp, sessionId, `(() => {
+        const rows = [...document.querySelectorAll('.cr-float-msg')]
+        const last = rows[rows.length - 1]
+        const identity = document.querySelector('.cr-composer-compact .cr-composer-identity')
+        return {
+          rows: rows.length,
+          avatars: document.querySelectorAll('.cr-float-msg .cr-avatar').length,
+          names: document.querySelectorAll('.cr-float-msg .cr-msg-name').length,
+          times: document.querySelectorAll('.cr-float-msg .cr-msg-time').length,
+          identity: identity ? identity.textContent.trim() : '',
+          mentionButton: Boolean(document.querySelector('.cr-composer-compact .cr-mention-btn')),
+          lastName: last && last.querySelector('.cr-msg-name') ? last.querySelector('.cr-msg-name').textContent : '',
+        }
+      })()`)
+      if (content.rows < 3) throw new Error(`浮窗里只剩 ${content.rows} 条消息，内容被压掉了`)
+      if (content.avatars !== content.rows) throw new Error(`每条消息都该有头像：${content.avatars}/${content.rows}`)
+      if (content.names !== content.rows) throw new Error(`每条消息都该有署名：${content.names}/${content.rows}`)
+      if (content.times !== content.rows) throw new Error(`每条消息都该有时间：${content.times}/${content.rows}`)
+      if (!/以/.test(content.identity)) throw new Error(`浮窗里该写明以谁的身份发言：${JSON.stringify(content.identity)}`)
+      if (!content.mentionButton) throw new Error('浮窗输入框里没有 @ 按钮')
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-composer-compact .cr-mention-btn').click()`)
+      await waitForSelector(cdp, sessionId, '.cr-mention-pop')
+      const pickRows = await evaluate(
+        cdp,
+        sessionId,
+        `[...document.querySelectorAll('.cr-mention-pop .cr-pop-row')].map((node) => node.textContent.trim())`,
+      )
+      if (!pickRows.length) throw new Error('浮窗里点 @ 没有列出任何 agent')
+      // 收起：胶囊上要带着「谁：说了什么」，不是一个光秃秃的房间名。
+      await evaluate(cdp, sessionId, `document.querySelector('.cr-float-head .cr-icon-btn').click()`)
+      await waitForSelector(cdp, sessionId, '.cr-float-pill')
+      const pill = await evaluate(cdp, sessionId, `(() => {
+        const say = document.querySelector('.cr-float-pill-say')
+        const name = document.querySelector('.cr-float-pill-name')
+        return { say: say ? say.textContent : '', name: name ? name.textContent : '' }
+      })()`)
+      const who = content.lastName.replace('（我）', '')
+      if (!pill.name) throw new Error('收起以后胶囊上没有房间名')
+      if (pill.say.indexOf('：') < 0 || pill.say.indexOf(who) !== 0) {
+        throw new Error(`胶囊上没有带上最后一句（应为「${who}：…」）：${JSON.stringify(pill)}`)
+      }
+
       await cdp.send(
         'Emulation.setDeviceMetricsOverride',
         { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
         sessionId,
       )
       await evaluate(cdp, sessionId, `localStorage.removeItem('dsh-chatroom:float-pos:v1')`)
-      console.log('verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内、收起成胶囊也拖得动')
+      console.log(
+        'verified — 位置记得住、越界夹回、拖动不出界、窗口变窄仍在视口内、收起成胶囊也拖得动；' +
+          '浮窗里有头像 / 署名 / 时间 / 身份行与 @ 候选，胶囊收起时带着最后一句',
+      )
     }
 
     // 「没回上来」不能只是一行灰字：得有入口把那一个 agent 单独重跑一次。

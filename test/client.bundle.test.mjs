@@ -145,7 +145,9 @@ test('回车提交先问过输入法：拼字中的那一下回车不能把半�
   // 守输入法那一关仍要求落在最前面 400 字符里 —— 必须先挡，再干别的。
   const enterHandlers = handlers.filter((block) => /['"]Enter['"]/.test(block.slice(0, 1200)))
   const withoutGuard = enterHandlers.filter((block) => !block.slice(0, 400).includes('imePicking(event)'))
-  assert.ok(enterHandlers.length >= 10, `接回车的处理器只找到 ${enterHandlers.length} 个，这条检查失去意义`)
+  // 浮窗和面板现在共用同一个输入组件（以前各写一份），所以样本从 10 个降到 9 个：
+  // 浮窗那个回车处理器不再单独存在，而不是「漏挡了一个」。
+  assert.ok(enterHandlers.length >= 9, `接回车的处理器只找到 ${enterHandlers.length} 个，这条检查失去意义`)
   assert.deepEqual(
     withoutGuard.map((block) => block.split('\n')[0].trim()),
     [],
