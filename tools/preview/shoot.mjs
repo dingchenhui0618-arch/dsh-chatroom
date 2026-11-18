@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -18,7 +18,6 @@ const root = join(here, '..', '..')
 const outDir = join(root, 'docs')
 const port = Number(process.env.PREVIEW_PORT ?? 3491)
 const guestPort = Number(process.env.PREVIEW_GUEST_PORT ?? port + 1)
-const cdpPort = Number(process.env.PREVIEW_CDP_PORT ?? 9333)
 const emptyPort = Number(process.env.PREVIEW_EMPTY_PORT ?? port + 10)
 
 const CHROME = [
@@ -189,7 +188,7 @@ const shots = [
     setup: '/preview/history-live',
     waitFor: '.cr-older-btn',
     before: 'history-live-top',
-    verify: ['history-live', 'ime-enter', 'draft-per-room'],
+    verify: ['history-live', 'ime-enter', 'draft-per-room', 'mention'],
     caption: '翻着历史时屋里又进来话：出口上写清「几条新的」，人没被拽到底部，投影滑动留下的那道接缝也补上了',
   },
 ]
@@ -264,7 +263,18 @@ async function waitForSelector(cdp, sessionId, selector, attempts = 80) {
     if (count > 0) return count
     await sleep(100)
   }
-  throw new Error(`等不到元素：${selector}`)
+  // 找不到的时候得说清「页面当时长什么样」：空白页、报错条、还是只是房间没选中。
+  const state = await evaluate(
+    cdp,
+    sessionId,
+    `(() => ({
+      rooms: [...document.querySelectorAll('.cr-room-name')].map((node) => String(node.textContent).trim()),
+      active: (document.querySelector('.cr-room.cr-active .cr-room-name') || {}).textContent || null,
+      errors: [...document.querySelectorAll('.cr-error-bar')].map((node) => String(node.textContent).trim()),
+      body: document.body ? document.body.innerText.slice(0, 160) : null,
+    }))()`,
+  ).catch((error) => ({ readFailed: String(error && error.message) }))
+  throw new Error(`等不到元素：${selector}｜页面当时：${JSON.stringify(state)}`)
 }
 
 /** 元素在视口里的位置，连视口大小一起取回来，好判断它是不是跑出去了。 */
@@ -481,6 +491,28 @@ async function startEmptyServer() {
   throw new Error(`空状态预览服务没起来：端口 ${emptyPort}（${String(lastError?.message ?? '')}）`)
 }
 
+/**
+ * Chrome 自己挑的 CDP 端口。
+ *
+ * 写死端口（原来是 9333）有过一次很费解的翻车：上一次跑没死透的无头 Chrome 还占着它，
+ * 新起的那只绑不上就直接退出，脚本于是连到了那个**旧**浏览器 —— 它已经连不上本机服务，
+ * 于是每一屏都是空白页、导航报 ERR_CONNECTION_REFUSED，而 curl 明明是通的。
+ * 让 Chrome 用 0 自己挑，端口它会写进 <profile>/DevToolsActivePort 第一行，从此互不干扰。
+ */
+async function cdpPortOf(dir) {
+  for (let i = 0; i < 200; i += 1) {
+    try {
+      const text = await readFile(join(dir, 'DevToolsActivePort'), 'utf8')
+      const port = Number(text.split('\n')[0])
+      if (port > 0) return port
+    } catch {
+      /* Chrome 还没把端口写出来 */
+    }
+    await sleep(100)
+  }
+  throw new Error('Chrome 没写出 DevToolsActivePort：无头浏览器没起来')
+}
+
 const profileDir = await mkdtemp(join(tmpdir(), 'chatroom-shot-'))
 const chrome = spawn(
   CHROME,
@@ -493,7 +525,7 @@ const chrome = spawn(
     '--disable-extensions',
     '--force-device-scale-factor=2',
     `--user-data-dir=${profileDir}`,
-    `--remote-debugging-port=${cdpPort}`,
+    '--remote-debugging-port=0',
     'about:blank',
   ],
   { stdio: 'ignore' },
@@ -503,6 +535,7 @@ const chrome = spawn(
 let emptyProc = null
 
 try {
+  const cdpPort = await cdpPortOf(profileDir)
   const version = await waitForJson(`http://127.0.0.1:${cdpPort}/json/version`)
   const cdp = await Cdp.connect(version.webSocketDebuggerUrl)
   await mkdir(outDir, { recursive: true })
@@ -533,7 +566,9 @@ try {
     }, sessionId)
     await cdp.send('Page.enable', {}, sessionId)
     await cdp.send('Runtime.enable', {}, sessionId)
-    await cdp.send('Page.navigate', { url: `http://127.0.0.1:${shotPort}/?view=${shot.view}` }, sessionId)
+    // 导航失败要当场说清楚：不然等着等去只等到一个空白页。
+    const nav = await cdp.send('Page.navigate', { url: `http://127.0.0.1:${shotPort}/?view=${shot.view}` }, sessionId)
+    if (nav && nav.errorText) throw new Error(`打不开这一屏（${shot.name}，端口 ${shotPort}）：${nav.errorText}`)
     await waitForSelector(cdp, sessionId, shot.waitFor)
     if (shot.nudge) {
       await fetch(`http://127.0.0.1:${shotPort}/preview/nudge`)
@@ -2268,6 +2303,164 @@ try {
         `verified — 草稿跟着屋子走：换到「${other}」不带过去（发送按钮也按不了）、回「${mine}」还在；浮窗与面板共用同一份`,
       )
     }
+    // @ 这条路：打一个 @ 就该开出候选、随打随筛，回车挑出来，正文里只有一个 @。
+    // 以前候选只由「提及」按钮开关，挑一个候选是往草稿末尾拼「@名字 」——
+    // 人已经打过的那个 @ 留在前面，发出去成了「@ @名字」；而候选开着时回车直接把
+    // 「@账」当一句话发出去，看起来就像「不点那个按钮就 @ 不到人」。
+    if (wants(shot, 'mention')) {
+      const draftNow = () => evaluate(cdp, sessionId, `document.querySelector('textarea.cr-textarea').value`)
+      const popRows = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `[...document.querySelectorAll('.cr-mention-pop .cr-pop-row')].map((node) => {
+            const span = node.querySelector('span')
+            return span ? String(span.textContent).trim() : String(node.textContent).trim()
+          })`,
+        )
+      const typeAt = async (text) => {
+        await cdp.send('Input.insertText', { text }, sessionId)
+        await sleep(120)
+      }
+      // 真的按一下 @（Shift+2）：走的是人打字那条路，而不是直接把字符塞进去。
+      const pressAt = async () => {
+        await cdp.send(
+          'Input.dispatchKeyEvent',
+          {
+            type: 'keyDown',
+            modifiers: 8,
+            key: '@',
+            code: 'Digit2',
+            text: '@',
+            unmodifiedText: '@',
+            windowsVirtualKeyCode: 50,
+            nativeVirtualKeyCode: 50,
+          },
+          sessionId,
+        )
+        await cdp.send(
+          'Input.dispatchKeyEvent',
+          { type: 'keyUp', modifiers: 8, key: '@', code: 'Digit2', windowsVirtualKeyCode: 50, nativeVirtualKeyCode: 50 },
+          sessionId,
+        )
+        await sleep(150)
+      }
+      const pressEnter = () =>
+        cdp.send(
+          'Input.dispatchKeyEvent',
+          { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 },
+          sessionId,
+        )
+      const until = async (check, note, tries = 80) => {
+        for (let i = 0; i < tries; i += 1) {
+          if (await check()) return
+          await sleep(100)
+        }
+        throw new Error(note)
+      }
+
+      if ((await draftNow()) !== '') throw new Error('上一段检查没把草稿清干净，@ 这条验不动')
+      await evaluate(cdp, sessionId, `document.querySelector('textarea.cr-textarea').focus()`)
+      await pressAt()
+      if ((await draftNow()) !== '@') throw new Error(`「@」没进输入框：${JSON.stringify(await draftNow())}`)
+
+      let rows = []
+      await until(
+        async () => {
+          rows = await popRows()
+          return rows.length > 0
+        },
+        '打一个 @ 之后没有开出候选：人只能自己记得 agent 的名字',
+      )
+      const target = rows[0]
+      // 用名字的第一个字当筛选词：候选要跟着变窄，而不是一直列着全部。
+      const fragment = String(target).slice(0, 1)
+      await typeAt(fragment)
+      await until(
+        async () => {
+          rows = await popRows()
+          return rows.length > 0 && rows.every((name) => name.indexOf(fragment) > -1)
+        },
+        `打了「${fragment}」之后候选没有跟着筛：${JSON.stringify(rows)}`,
+      )
+      if (rows.indexOf(target) === -1) {
+        throw new Error(`筛完把要挑的那个弄丢了：想要「${target}」，剩 ${JSON.stringify(rows)}`)
+      }
+
+      const expectDraft = '@' + target + ' '
+      await pressEnter()
+      await sleep(200)
+      const picked = await draftNow()
+      if (picked !== expectDraft) {
+        throw new Error(
+          `回车挑候选之后草稿是 ${JSON.stringify(picked)}，应该是 ${JSON.stringify(expectDraft)}（多出来那个 @ 就是「两个 @@」的来源）`,
+        )
+      }
+
+      // 真发出去：正文里只能有一个 @，而且那个 agent 要真的被叫起来回一句。
+      const body = '这句是打出来的点名'
+      await typeAt(body)
+      await pressEnter()
+      let sentRow = null
+      await until(
+        async () => {
+          sentRow = await evaluate(
+            cdp,
+            sessionId,
+            `(() => {
+              const row = [...document.querySelectorAll('.cr-msg')]
+                .find((node) => String(node.textContent).indexOf(${JSON.stringify(body)}) > -1)
+              return row ? String(row.textContent) : null
+            })()`,
+          )
+          return Boolean(sentRow)
+        },
+        '发出去之后在消息区找不到这一句',
+      )
+      if (/@@|@\s+@/.test(sentRow)) throw new Error(`正文里出现了两个 @：${JSON.stringify(sentRow)}`)
+      if (sentRow.indexOf('@' + target) === -1) {
+        throw new Error(`正文里没有「@${target}」：${JSON.stringify(sentRow)}`)
+      }
+      const hintText = () =>
+        evaluate(
+          cdp,
+          sessionId,
+          `(() => {
+            const node = [...document.querySelectorAll('.cr-hint')].find((row) => String(row.textContent).indexOf('没叫到') > -1)
+            return node ? String(node.textContent).trim() : null
+          })()`,
+        )
+      let answered = false
+      await until(
+        async () => {
+          answered = await evaluate(
+            cdp,
+            sessionId,
+            `(() => {
+              const rows = [...document.querySelectorAll('.cr-msg')]
+              const index = rows.findIndex((node) => String(node.textContent).indexOf(${JSON.stringify(body)}) > -1)
+              return index > -1 && rows.slice(index + 1).some((node) => !node.classList.contains('cr-mine'))
+            })()`,
+          )
+          return answered
+        },
+        '这句点名没人接：正文里写着 @ 名字，那个 agent 却没被叫起来',
+      )
+      // 有人接话了，「没叫到 agent」这句就得自己消失 —— 它还挂着就是在说反话。
+      let staleHint = null
+      await until(
+        async () => {
+          staleHint = await hintText()
+          return !staleHint
+        },
+        `已经有人接了话，界面却还挂着「没叫到 agent」`,
+        60,
+      )
+      console.log(
+        `verified — 打 @ 就开候选（${target}）、随打随筛、回车挑出「${expectDraft}」；发出去的正文只有一个 @，那个 agent 真的接了话`,
+      )
+    }
+
     await cdp.send('Target.closeTarget', { targetId })
   }
 

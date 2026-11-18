@@ -140,7 +140,10 @@ test('回车提交先问过输入法：拼字中的那一下回车不能把半�
   // isComposing 进来（老输入法只给 keyCode 229），认不出来就等于「拼音打一半就发出去」。
   // 光测输入框不够：新建房间、加入、改名、建 agent 这些表单也都接回车。
   const handlers = source.split(/onKeyDown:\s*\(event\)\s*=>\s*\{/).slice(1)
-  const enterHandlers = handlers.filter((block) => /['"]Enter['"]/.test(block.slice(0, 400)))
+  // 认「这个处理器接不接回车」要给足窗口：输入器那一个先处理上下选候选，回车判断排在
+  // 后面（第 673 个字符），窗口给 400 会把它漏掉，于是这条检查悄悄少一个样本。
+  // 守输入法那一关仍要求落在最前面 400 字符里 —— 必须先挡，再干别的。
+  const enterHandlers = handlers.filter((block) => /['"]Enter['"]/.test(block.slice(0, 1200)))
   const withoutGuard = enterHandlers.filter((block) => !block.slice(0, 400).includes('imePicking(event)'))
   assert.ok(enterHandlers.length >= 10, `接回车的处理器只找到 ${enterHandlers.length} 个，这条检查失去意义`)
   assert.deepEqual(
