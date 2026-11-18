@@ -30,6 +30,17 @@ import { code, codeStatus } from './code.js'
  * 也不要拿旧身份错认人）。明文 HTTP 是设计取舍，威胁模型是「同一 WiFi 下可信的人」。
  */
 
+/**
+ * 正文只认字符串。
+ *
+ * 不校验的话 `String({ a: 1 })` 会把 `[object Object]` 当成一句正常的聊天话落库 ——
+ * 一次形状不对的请求就能在屋里留下一条谁也看不懂、却和真人说的一样的话，
+ * 而且它还会被当成对话记录喂给模型。
+ */
+function textOf(value) {
+  return typeof value === 'string' ? value : null
+}
+
 /** 等对面机器回一个回合的上限。测试用环境变量压短，量的是失败路径而不是耐心。 */
 function assignTimeout() {
   const raw = Number(process.env.DSH_CHATROOM_ASSIGN_TIMEOUT)
@@ -255,9 +266,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     const declared = (Array.isArray(agents) ? agents : [])
       .slice(0, 12)
       .map((agent) => ({
-        key: String(agent?.id ?? '').trim().slice(0, 64),
-        name: String(agent?.name ?? '').trim().slice(0, 60),
-        role: String(agent?.role ?? '').trim().slice(0, 200),
+        key: (textOf(agent?.id) ?? '').trim().slice(0, 64),
+        name: (textOf(agent?.name) ?? '').trim().slice(0, 60),
+        role: (textOf(agent?.role) ?? '').trim().slice(0, 200),
       }))
       .filter((agent) => agent.key)
     const seen = new Set(declared.map((agent) => agent.key))
@@ -360,7 +371,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
   }
 
   function joinRoom({ code, machine: guestMachine, self, agents, build, instance: rawInstance }, address) {
-    const wanted = String(code ?? '').trim().toUpperCase()
+    if (typeof code !== 'string') fail('code_required', '房间码不能为空。')
+    const wanted = code.trim().toUpperCase()
     if (!wanted) fail('code_required', '房间码不能为空。')
     const room = store.state.rooms.find((row) => String(row.code ?? '').toUpperCase() === wanted)
     if (!room) fail('room_not_found', '房间码不对，或这台机器上没有这间屋子。')
@@ -420,7 +432,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     const origin = { kind: 'lan', peer: address, machine: label }
     // 对面没报名字（或跟本机同名）时用机器名兜底：屋里出现两个「我」，
     // 成员列和 @ 都会认错人。
-    const declaredName = String(self?.name ?? '').trim().slice(0, 60)
+    const declaredName = (textOf(self?.name) ?? '').trim().slice(0, 60)
     const humanName = !declaredName || declaredName === store.state.self.name ? label : declaredName
 
     store.commit((draft) => {
@@ -653,12 +665,14 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         const peer = requirePeer(input.peerId)
         const room = getRoom(store.state, peer.roomId)
         if (!room) fail('room_not_found', '这间屋子已经不在了。')
+        const text = textOf(input.text)
+        if (text === null) fail('bad_text', '正文只能是字符串。')
         let posted = null
         store.commit((draft) => {
           posted = postMessage(draft, {
             roomId: peer.roomId,
             authorId: peer.selfMemberId,
-            text: input.text,
+            text,
             mentions: input.mentions,
             replyTo: input.replyTo,
             origin: { kind: 'lan', peer: peer.address, machine: peer.machine },
@@ -688,6 +702,9 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       } else if (path === '/lan/reply' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)
+        if (input.error === undefined && textOf(input.text) === null) {
+          fail('bad_text', '回传的正文只能是字符串。')
+        }
         value = settleAssignment({
           peerId: peer.id,
           assignmentId: input.assignmentId,
@@ -718,15 +735,17 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       } else if (path === '/lan/self' && request.method === 'POST') {
         const input = await readJson(request)
         const peer = requirePeer(input.peerId)
-        const name = String(input.name ?? '').trim().slice(0, 60)
-        if (name) {
+        const name = textOf(input.name)
+        if (name === null) fail('bad_text', '名字只能是字符串。')
+        const trimmed = name.trim().slice(0, 60)
+        if (trimmed) {
           store.commit((draft) => {
             const room = getRoom(draft, peer.roomId)
             const member = room ? getMember(room, peer.selfMemberId) : null
-            if (member) member.name = name
+            if (member) member.name = trimmed
           })
         }
-        value = { renamed: Boolean(name) }
+        value = { renamed: Boolean(trimmed) }
       } else if (path === '/lan/agents' && request.method === 'POST') {
         /**
          * 那台机器补报名单：它刚建了一个 agent，或者改了名字/职责、删掉了一个。
