@@ -53,6 +53,11 @@
 - **成功响应里不发 `Access-Control-Allow-Origin`**：局域网面的调用方是另一台机器上的插件进程
   （node 的 `fetch`，不看 CORS）和 `curl`；界面那半边调的是宿主 RPC，同源。放行头没有用处，
   只会多出一条「随便哪个网页都能读过本机聊天记录」的路。
+- 这一面有模糊测试（`test/lan-fuzz.test.mjs`）：固定种子生成 120 个随机包，加上 10 个点名
+  坏包（8 KB 头、非法 chunk 长度、`Content-Length: -1`、400 KB body、Upgrade、HTTP/0.9
+  一行…）。断言的不是「每个包都有回应」，而是三条不变量 —— 宿主仍在服务、**状态一个字节
+  都没被改动**（revision / 屋子 / 成员 / 消息）、全程没有 5xx；另外七个端点各拿伪造
+  `peerId` 打一遍，必须一律 403 `peer_unknown`。
 
 ## 哪些东西落在磁盘上
 
