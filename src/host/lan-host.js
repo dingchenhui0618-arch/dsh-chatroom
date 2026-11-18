@@ -736,10 +736,18 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       return
     }
     if (response.destroyed || response.writableEnded) return
+    /**
+     * 这里**不发** Access-Control-Allow-Origin。
+     *
+     * 局域网面的调用方只有两种：另一台机器上的插件进程（node 的 fetch，不看 CORS），
+     * 和排障时手敲的 curl。浏览器从来不走这条路 —— 界面那半边调的是宿主的
+     * RPC（`/api/dsh.chatroom/*`，同源、宿主认证）。所以放行头没有任何用处，只多出
+     * 一条「随便哪个网页都能读过本机聊天记录」的路：带着 Origin 的 GET 是简单请求，
+     * 不被放行头挡住时浏览器会把屋里的话、成员的机器名、刚拿到的 peerId 都交给它。
+     */
     response.writeHead(200, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      'access-control-allow-origin': '*',
     })
     response.end(JSON.stringify({ ok: true, value }))
   }

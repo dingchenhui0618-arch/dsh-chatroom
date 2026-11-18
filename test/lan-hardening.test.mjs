@@ -128,6 +128,51 @@ test('坏包之后真实加屋流程照旧：宿主状态没被弄坏', async ()
   })
 })
 
+test('局域网面不给浏览器跨站读的机会：成功响应里没有 CORS 放行头', async () => {
+  await withHost(async (host) => {
+    const base = rejections.length
+    const created = await call(host.routes, 'command', { action: 'room.create', input: { name: '不放行跨站' } })
+    assert.equal(created.ok, true, JSON.stringify(created.error))
+    const room = created.value.rooms[0]
+
+    // 带着 Origin 发：如果服务端回 Access-Control-Allow-Origin，浏览器就会把响应交给
+    // 那个网页 —— 屋里说过的话、成员的机器名、拿到的 peerId 都能被读走。
+    const probe = await fetch(`http://127.0.0.1:${host.port}/lan/ping`, {
+      headers: { origin: 'https://evil.example' },
+    })
+    assert.equal(probe.status, 200)
+
+    const joined = await fetch(`http://127.0.0.1:${host.port}/lan/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: JSON.stringify({ code: room.code, machine: 'GUEST-PC', self: { name: '季白' }, agents: [] }),
+    })
+    assert.equal(joined.status, 200, await joined.clone().text())
+
+    const preflight = await fetch(`http://127.0.0.1:${host.port}/lan/message`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://evil.example', 'access-control-request-method': 'POST' },
+    })
+
+    const names = ['access-control-allow-origin', 'access-control-allow-credentials', 'access-control-allow-methods']
+    for (const [label, response] of [
+      ['探针', probe],
+      ['加入', joined],
+      ['预检', preflight],
+    ]) {
+      for (const name of names) {
+        assert.equal(
+          response.headers.get(name),
+          null,
+          `${label}的响应里出现了 ${name} —— 随便一个网页就能读过本机聊天记录`,
+        )
+      }
+    }
+    assert.equal(preflight.status, 404, '没有 CORS 预检这回事：不是我们认的端点就 404')
+    assert.equal(rejections.length, base, '这一路不该产生未处理的拒绝')
+  })
+})
+
 test('其它坏输入：未知路径 404、超大声明长度 400、方法不对 404、非 JSON 400', async () => {
   await withHost(async (host) => {
     const base = rejections.length

@@ -428,6 +428,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 | **agent 的名字与职责可改**（改的是同一个 agent，多间屋子一起换，@ 认新名字、职责进 prompt） | ✅ 已验证 | `test/host.integration.test.mjs`：同一个 agent 在两间屋里，`bot.update` 后两间屋子的成员名/职责一起换、`bots` 仍只有一条；`@新名字` 能驱动它且 prompt 里有「你的职责：…」，`@旧名字` 不再驱动 |
 | agent 表单在真实渲染里能改职责并落库 | ✅ 已验证 | `npm run preview:shots` 里 `verify: 'agent-edit'`：点「改」→ 表单原地展开 → 改职责 → 保存 → 成员列当场换，再改回原值 |
 | LAN 请求面**不会被坏包打死**（畸形 `Host` / 非法请求行 / 超大 body / 非 JSON / 未知路径） | ✅ 已验证 | `test/lan-hardening.test.mjs` 3 用例：直接往 socket 灌字节，断言每条都有状态码、之后宿主仍能服务、全程零未处理拒绝。拿修复前的代码跑同一组测试，3 条全红 |
+| LAN 响应**不能被别人家的网页读走**（成功响应里不带 CORS 放行头） | ✅ 已验证 | `test/lan-hardening.test.mjs` 新增一条：带 `Origin: https://evil.example` 打 `/lan/ping`、`/lan/join`，再对 `/lan/message` 发 OPTIONS 预检，三条响应的 `access-control-allow-origin` / `-credentials` / `-methods` 必须都不存在、预检回 404。修复前红在「探针的响应里出现了 access-control-allow-origin —— 随便一个网页就能读过本机聊天记录」。调用方只有另一台机器上的插件进程（node 的 `fetch`，不看 CORS）和 `curl`，界面那半边走同源宿主 RPC，所以这条放行头没有用处，只多一条跨站读的路 |
 | **端口 4399 被别的程序占了**（插件装了两份、或别的服务压了这个端口） | ✅ 已验证 | `test/lan-port-busy.test.mjs` 2 用例：先用一个真 `node:http` 占住端口，再把插件起在同一端口上 —— `apply()` 不抛、本机房间照常建房发言、`@` 到的 agent 照常回话、`snapshot.lan` 报 `serving: false` 与「端口 N 被占用了。」，后面还跟着「关掉占着它的程序，或用 DSH_CHATROOM_PORT 换一个端口」——那行会原样出现在邀请栏里，不把人堵在死路上；把「监听失败就让插件整体挂掉」写回去，第一条当场红。第二条先占后放：那个端口下一次能正常起来、`port` 还是同一个号、`error` 清空，证明失败那次没留下半开的监听 |
 | **三台机器同屋**（宿主 + 两台加入方）：6 个成员的归属不串台，A 的镜像把 B 的人标成 `LAN · GUEST-B`，B 说一句在 A 那边不能变成本机 | ✅ 已验证（真 HTTP） | `test/lan-multi.test.mjs` 4 用例：`@阿乙` 只派给 B（A 与宿主的模型调用次数都是 0），B 的回复落库 `origin.machine = GUEST-B` |
 | **全员轮次跨两台机器**：三台机器各一个 agent、预算正好 3，一轮里恰好各说一次，没有重复派发 | ✅ 已验证 | 同上：断言 Claude / 阿甲 / 阿乙 各一条、`prompts` 各 1；等 600ms 后仍只有 3 条 |
@@ -485,6 +486,14 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
   发什么都不会把宿主进程带走（这条是修出来的，见 `test/lan-hardening.test.mjs`）。
   但这不等于「防得住同网段的人」：**能连上 4399 的人就是能读屋里消息的人**，房间码是
   进门的唯一凭据，所以别在不可信的网络里开这个口。
+- **成功响应里不发 CORS 放行头**：局域网面的调用方是另一台机器上的插件进程（node 的
+  `fetch`，不看 CORS）和 `curl`，界面那半边调的是宿主 RPC（同源）。放行头没有任何用处，
+  却会多出一条「随便哪个网页都能读过本机聊天记录」的路 —— 带 `Origin` 的 GET 是简单请求，
+  不被放行头挡住时浏览器就会把屋里的话、成员机器名、刚拿到的 `peerId` 交给它。这条有断言：
+  `test/lan-hardening.test.mjs` 里带 `Origin` 打探针、加入、预检三条路径，成功响应里
+  `access-control-allow-origin` 必须不存在。
+- 完整的信任边界（谁能碰到什么、房间码的强度、落盘里有什么、明确不做哪些事）写在
+  [`docs/SECURITY.md`](docs/SECURITY.md)。
 - 不做附件、撤回、通知推送、手机端。
 - 加入方的镜像房间不能改规则、不能解散：规则只有一份，在宿主那台。
 - 房间成员**不复用 dsh-bot**：那插件的 peer 依赖钉在 `0.2.0-rc.2`，本机 DSH 是 `0.2.2-rc.1`，
@@ -494,7 +503,7 @@ dsh plugin --profile <你的profile> add D:\Projects\dsh-chatroom
 ## 测试与截图
 
 ```bash
-npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包 + 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（84 用例）
+npm test               # 状态机 + fake-model 端到端 + LAN 端到端 + 三机同屋 + 同台双 agent + 补建 agent + 版本不一致 + 加入方重启 + 宿主重启/掉线回来 + 关插件途中的握手 + 重连退避 + 连不上的文案 + LAN 抗坏包（含跨站读不进来）+ 端口被占 + 邀请地址排序 + 历史翻页 + 代码指纹 + 协议面 + 客户端装载 + 包清单（85 用例）
 npm run preview:build  # 打截图用的浏览器入口（esbuild，一次性）
 npm run preview:serve  # 起预览服务器（3491 宿主 / 3492 加入方；第三台机器按需加入）
 npm run preview:shots  # 无头 Chrome 重新截图到 docs/
