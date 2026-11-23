@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>A · 深渊回声 — 方向稿</title>
+<style>
+  :root{
+    --bg:#151517; --base:#17181b; --raise:#1c1e22; --surface:#202226; --surface-2:#25272c;
+    --line:#ffffff12; --line-2:#ffffff1f;
+    --fg:#f2f4f6; --muted:#b3b9c3; --caption:#8d939e;
+    --live:#7fe0cf; --live-soft:#7fe0cf1f;
+    --on-live:#0b1413;
+    --r:8px; --r-lg:12px; --r-xl:16px;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+    --ease:cubic-bezier(.22,1,.36,1);
+    --shadow-1:0 1px 2px #00000047;
+    --shadow-2:0 24px 60px -20px #000000a8, 0 2px 8px #00000040;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0c0c0e;color:var(--fg);font-family:var(--font);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .board{position:relative;width:1440px;min-height:900px;overflow:hidden;background:var(--bg)}
+  /* 光从上面来：只在顶部一层，非常轻的一点冷光，不是整屏渐变 */
+  .board::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(1200px 320px at 46% -120px,#8fd9d01a,transparent 70%)}
+  .board::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.035;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E")}
+  .shell{position:relative;display:flex;height:900px}
+
+  /* 宿主图标栏 */
+  .rail{width:64px;flex:0 0 64px;display:flex;flex-direction:column;align-items:center;gap:var(--s2);padding:var(--s4) 0;border-right:1px solid var(--line);background:#131416}
+  .rail-mark{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    background:#f5f5f3;box-shadow:0 0 0 1px #ffffff1a,0 0 22px -6px #7fe0cf66;position:relative}
+  .rail-mark img{width:22px;height:auto;display:block}
+  .rail-mark::after{content:"";position:absolute;inset:-5px;border-radius:14px;border:1px solid #7fe0cf33;
+    animation:breathe 6s var(--ease) infinite}
+  .rail-btn{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#8c929c;border:0;background:transparent;position:relative}
+  .rail-btn.on{color:var(--fg);background:#ffffff0d}
+  .rail-btn.on::before{content:"";position:absolute;left:-16px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--live)}
+  .rail-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .rail-end{margin-top:auto;display:flex;flex-direction:column;gap:var(--s2);align-items:center}
+
+  /* 三列 */
+  .panel{flex:1;min-width:0;display:grid;grid-template-columns:248px minmax(0,1fr) 264px}
+  .col{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .col+.col{border-left:1px solid var(--line)}
+  .col-head{display:flex;align-items:center;gap:var(--s2);padding:var(--s4) var(--s3) var(--s2);min-height:48px}
+  .col-title{font-size:13px;font-weight:600;letter-spacing:.01em}
+  .count{font-size:12px;color:var(--caption);font-variant-numeric:tabular-nums}
+  .grow{flex:1;min-width:0}
+
+  .rooms{padding:0 var(--s2);display:flex;flex-direction:column;gap:2px}
+  .room{display:flex;gap:var(--s3);padding:var(--s2);border-radius:var(--r-lg);position:relative;overflow:hidden}
+  .room.active{background:linear-gradient(180deg,#ffffff0f,#ffffff08)}
+  .room.active::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:2px;border-radius:2px;background:linear-gradient(180deg,var(--live),#7fe0cf00)}
+  .room-dot{width:6px;height:6px;border-radius:50%;background:var(--live);box-shadow:0 0 0 3px #7fe0cf1f;margin-top:7px;flex:0 0 auto}
+  .room-dot.off{background:#5b6068;box-shadow:none}
+  .room-body{flex:1;min-width:0}
+  .room-top{display:flex;align-items:center;gap:var(--s2)}
+  .room-name{font-size:13px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .room-time{font-size:11px;color:var(--caption);font-variant-numeric:tabular-nums}
+  .room-preview{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding:var(--s3) var(--s3) var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+  .foot-label{display:flex;align-items:center;gap:var(--s2);font-size:12px;color:var(--muted)}
+  .foot-label b{color:var(--fg);font-weight:500}
+  .chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 var(--s2);border-radius:999px;background:#ffffff0a;border:1px solid var(--line);font-size:12px;color:var(--fg)}
+  .chip .x{color:var(--caption);font-style:normal}
+  .name-row{display:flex;align-items:center;gap:var(--s2)}
+  .field{flex:1;height:32px;border:1px solid var(--line);border-radius:var(--r);background:#ffffff06;color:var(--fg);padding:0 var(--s3);font:inherit;font-size:13px}
+  .link{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:4px}
+  .link svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:1.8}
+
+  /* 中栏 */
+  .room-head{padding:var(--s3) var(--s5) var(--s3);border-bottom:1px solid var(--line);position:relative;overflow:hidden}
+  .room-head::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:linear-gradient(90deg,transparent,#7fe0cf66,transparent);transform:translateX(-100%);animation:sweep 9s linear infinite}
+  .room-head-top{display:flex;align-items:center;gap:var(--s2)}
+  .room-title{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0}
+  .code{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--caption);border:1px solid var(--line);border-radius:999px;padding:2px var(--s2);background:#ffffff05}
+  .head-actions{display:flex;gap:var(--s3);margin-left:auto}
+  .head-actions .link{font-size:12px}
+  .room-sub{font-size:12px;color:var(--caption);margin-top:2px}
+
+  .flow{flex:1;padding:var(--s4) var(--s5) var(--s3);display:flex;flex-direction:column;gap:14px;overflow:hidden;background:linear-gradient(180deg,#ffffff05,transparent 30%,transparent 70%,#00000026)}
+  .day{display:flex;align-items:center;gap:var(--s3);color:var(--caption);font-size:12px}
+  .day::before,.day::after{content:"";height:1px;flex:1;background:var(--line)}
+
+  .msg{display:flex;gap:var(--s3);align-items:flex-start;animation:rise .5s var(--ease) both}
+  .msg:nth-child(n){animation-delay:0ms}
+  .avatar{width:28px;height:28px;border-radius:999px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;background:var(--surface);border:1px solid var(--line);color:var(--fg)}
+  .avatar.live{border-color:#7fe0cf4d;box-shadow:0 0 0 3px #7fe0cf14, inset 0 0 12px #7fe0cf1f}
+  .msg-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .meta{display:flex;align-items:center;gap:var(--s2);font-size:12px}
+  .name{font-size:13px;font-weight:600}
+  .src{color:#7fe0cfcc;font-size:11px;letter-spacing:.02em}
+  .time{color:var(--caption);font-size:11px;font-variant-numeric:tabular-nums}
+  .text{font-size:15px;line-height:1.65;max-width:640px;white-space:pre-wrap}
+  .text .at{color:var(--live)}
+  .msg.mine{flex-direction:row-reverse}
+  .msg.mine .msg-body{align-items:flex-end}
+  .msg.mine .text{background:linear-gradient(180deg,#7fe0cf1c,#7fe0cf10);border:1px solid #7fe0cf2e;border-radius:14px 14px 4px 14px;padding:var(--s2) var(--s3)}
+  .msg.mine .avatar{background:#7fe0cf18;border-color:#7fe0cf33;color:#bff3ea}
+
+  .typing{display:flex;align-items:center;gap:var(--s2);margin-left:40px;color:var(--muted);font-size:12px}
+  .bubbles{display:inline-flex;gap:3px}
+  .bubbles i{width:4px;height:4px;border-radius:50%;background:var(--live);opacity:.35;animation:bubble 1.5s var(--ease) infinite}
+  .bubbles i:nth-child(2){animation-delay:.18s}
+  .bubbles i:nth-child(3){animation-delay:.36s}
+
+  /* 输入器 */
+  .composer{padding:var(--s2) var(--s5) var(--s4);border-top:1px solid var(--line);display:flex;flex-direction:column;gap:var(--s2);position:relative}
+  .composer::before{content:"";position:absolute;inset:-1px 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,#7fe0cf4d,transparent)}
+  .ident{font-size:12px;color:var(--caption)}
+  .ident b{color:var(--fg);font-weight:500;font-size:13px}
+  .input-shell{display:flex;align-items:flex-end;gap:var(--s2);padding:var(--s1) var(--s1) var(--s1) var(--s3);border:1px solid var(--line);border-radius:var(--r-lg);background:#ffffff07;box-shadow:0 0 0 0 #7fe0cf00;transition:box-shadow .35s var(--ease),border-color .35s var(--ease)}
+  .input-shell.focus{border-color:#7fe0cf59;box-shadow:0 0 0 3px #7fe0cf14,0 0 30px -12px #7fe0cf66}
+  .input-shell textarea{flex:1;min-height:34px;max-height:34px;resize:none;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;font-size:14px;line-height:1.5;padding:7px 0}
+  .input-shell textarea::placeholder{color:#6d727c}
+  .icon-btn{width:30px;height:30px;border-radius:8px;border:0;background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center}
+  .icon-btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7}
+  .send{height:30px;padding:0 var(--s3);border:1px solid #7fe0cf66;border-radius:8px;background:#7fe0cf1a;color:#c8f5ee;font:inherit;font-size:12px;display:flex;align-items:center;gap:6px;position:relative;overflow:hidden}
+  .send::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:#7fe0cf;opacity:0;animation:ping 4s var(--ease) infinite}
+  .foot{display:flex;align-items:center;gap:var(--s3);font-size:11px;color:var(--caption);font-variant-numeric:tabular-nums}
+  .foot .grow{flex:1}
+  .mention-pop{position:absolute;left:var(--s5);bottom:112px;width:236px;border:1px solid var(--line-2);border-radius:var(--r-lg);background:#1b1d21;box-shadow:var(--shadow-2);overflow:hidden;animation:pop .28s var(--ease) both}
+  .mention-pop .mi{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);font-size:12px}
+  .mention-pop .mi.on{background:#7fe0cf12}
+  .mention-pop .mi .avatar{width:20px;height:20px;font-size:11px}
+  .mention-pop .mi small{color:var(--caption);margin-left:auto;font-size:11px}
+
+  /* 右栏 */
+  .members{padding:0 var(--s3) var(--s4);display:flex;flex-direction:column;gap:var(--s1)}
+  .group{font-size:11px;letter-spacing:.12em;color:var(--caption);padding:var(--s3) var(--s2) var(--s1);text-transform:uppercase}
+  .member{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s2);border-radius:10px;position:relative}
+  .member:hover{background:#ffffff08}
+  .member .avatar{width:26px;height:26px;font-size:11px}
+  .m-body{min-width:0;flex:1}
+  .m-name{font-size:13px;display:flex;align-items:center;gap:6px}
+  .m-sub{font-size:11px;color:var(--caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lan-tag{font-size:10px;letter-spacing:.04em;color:#7fe0cfcc;border:1px dashed #7fe0cf4d;border-radius:4px;padding:0 4px;line-height:14px}
+  .auth{margin-top:auto;border-top:1px solid var(--line);padding:var(--s3) var(--s4) var(--s4)}
+  .auth-head{display:flex;align-items:baseline;gap:var(--s2);font-size:12px;font-weight:500}
+  .auth-head small{margin-left:auto;font-size:11px;color:var(--caption);font-weight:400}
+  .seg{position:relative;display:grid;grid-template-columns:repeat(3,1fr);margin-top:var(--s2);padding:2px;border:1px solid var(--line);border-radius:10px;background:#ffffff05}
+  .seg .thumb{position:absolute;top:2px;bottom:2px;left:2px;width:calc((100% - 4px)/3);border-radius:8px;background:#ffffff14;box-shadow:var(--shadow-1);transition:transform .4s var(--ease)}
+  .seg[data-v="ask"] .thumb{transform:translateX(100%)}
+  .seg[data-v="full"] .thumb{transform:translateX(200%)}
+  .seg button{position:relative;height:26px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px}
+  .seg button.on{color:var(--fg);font-weight:500}
+  .auth-note{font-size:11px;line-height:1.6;color:var(--caption);margin-top:var(--s2)}
+
+  /* 悬浮胶囊：声呐胶囊 */
+  .pill{position:absolute;right:24px;bottom:172px;display:flex;align-items:center;gap:var(--s2);height:52px;width:308px;padding:0 var(--s2);border-radius:999px;
+    background:linear-gradient(180deg,#23262b,#1a1c20);border:1px solid var(--line-2);box-shadow:var(--shadow-2);cursor:grab}
+  .pill::before{content:"";position:absolute;inset:-1px;border-radius:inherit;padding:1px;background:linear-gradient(120deg,#7fe0cf00,#7fe0cf66,#7fe0cf00);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:.55;animation:shimmer 6s linear infinite}
+  .pill-mark{width:34px;height:34px;border-radius:999px;background:#f5f5f3;display:flex;align-items:center;justify-content:center;flex:0 0 auto;position:relative}
+  .pill-mark img{width:21px;height:auto}
+  .pill-mark .sonar{position:absolute;inset:0;border-radius:999px;border:1px solid #7fe0cf;opacity:0;animation:sonar 2.4s var(--ease) infinite}
+  .pill-body{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+  .pill-room{font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .pill-room .unread{min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--live);color:var(--on-live);font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;animation:pop .4s var(--ease) both}
+  .pill-say{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill-say b{color:var(--fg);font-weight:500}
+  .pill-meta{display:flex;align-items:center;gap:6px;color:var(--caption);font-size:10px;font-variant-numeric:tabular-nums}
+  .pill-chev{width:24px;height:24px;border-radius:999px;border:0;background:#ffffff0a;color:var(--muted);display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .pill-chev svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2}
+  .pill-live{position:absolute;left:0;right:0;bottom:-10px;height:1px;background:linear-gradient(90deg,transparent,#7fe0cf88,transparent);animation:sonarLine 4s var(--ease) infinite}
+
+  /* 第二块板 */
+  .detail{width:1440px;padding:var(--s6) var(--s6) var(--s5);background:#101012;position:relative;min-height:560px;border-top:1px solid #ffffff10}
+  .detail::before{content:"";position:absolute;inset:0;background:radial-gradient(900px 240px at 20% 0%,#8fd9d014,transparent 70%);pointer-events:none}
+  .d-head{display:flex;align-items:baseline;gap:var(--s3);position:relative}
+  .d-kicker{font-size:11px;letter-spacing:.16em;color:#7fe0cfcc}
+  .d-title{font-size:18px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .d-sub{font-size:12px;color:var(--caption);margin:2px 0 0}
+  .d-row{display:flex;gap:var(--s5);align-items:flex-start;margin-top:var(--s5);position:relative}
+  .d-cell{display:flex;flex-direction:column;gap:var(--s2)}
+  .d-label{font-size:11px;color:var(--caption);letter-spacing:.06em}
+  .stage{background:#161719;border:1px solid #ffffff10;border-radius:var(--r-lg);padding:var(--s3)}
+  .stage.dark{background:#0e0f11}
+  .pill.static{position:relative;right:auto;bottom:auto;width:308px}
+  .pill.arrive{width:328px}
+  .pill.arrive .pill-room .unread{animation:pop .4s var(--ease) both}
+  .pill-speak{display:flex;align-items:center;gap:6px;color:#7fe0cfcc;font-size:10px}
+  .pill-speak .bubbles i{background:#7fe0cf}
+  .float{width:404px;border:1px solid var(--line-2);border-radius:var(--r-xl);background:linear-gradient(180deg,#1b1d21,#17191c);box-shadow:var(--shadow-2);overflow:hidden;position:relative}
+  .float::before{content:"";position:absolute;inset:0 0 auto 0;height:120px;background:radial-gradient(320px 120px at 30% 0%,#8fd9d01a,transparent 70%);pointer-events:none}
+  .f-head{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line);position:relative}
+  .f-mark{width:28px;height:28px;border-radius:8px;background:#f5f5f3;display:flex;align-items:center;justify-content:center}
+  .f-mark img{width:18px;height:auto}
+  .f-title{font-size:13px;font-weight:600}
+  .f-sub{font-size:11px;color:var(--caption);font-variant-numeric:tabular-nums}
+  .f-x{margin-left:auto;width:24px;height:24px;border-radius:6px;border:0;background:transparent;color:var(--caption);font-size:14px;line-height:1}
+  .f-flow{padding:var(--s3);display:flex;flex-direction:column;gap:var(--s3);max-height:268px;overflow:hidden}
+  .f-msg{display:flex;gap:var(--s2);font-size:13px;line-height:1.6}
+  .f-msg .avatar{width:22px;height:22px;font-size:10px}
+  .f-msg .meta{font-size:11px}
+  .f-msg .text{font-size:14px}
+  .f-composer{border-top:1px solid var(--line);padding:var(--s2) var(--s3) var(--s3)}
+  .f-input{display:flex;align-items:center;gap:var(--s2);height:38px;border:1px solid #7fe0cf40;border-radius:10px;background:#ffffff06;padding:0 var(--s1) 0 var(--s3);box-shadow:0 0 0 3px #7fe0cf10}
+  .f-input span{flex:1;color:#6d727c;font-size:13px}
+  .f-send{height:28px;padding:0 10px;border-radius:8px;border:1px solid #7fe0cf66;background:#7fe0cf1a;color:#c8f5ee;font-size:12px}
+  .pill-ghost{width:308px;height:52px;border-radius:999px;border:1px dashed #ffffff26;display:flex;align-items:center;justify-content:center;color:#5d626b;font-size:11px;background:#ffffff03}
+  .orb{position:relative;width:48px;height:48px;border-radius:999px;background:#f5f5f3;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px #ffffff26,0 12px 30px -10px #000000cc,0 0 40px -12px #7fe0cf88}
+  .orb img{width:30px;height:auto}
+  .orb-ring{position:absolute;inset:-6px;border-radius:999px;border:1px solid #7fe0cf66;animation:sonar 2.6s var(--ease) infinite}
+  .orb-badge{position:absolute;top:-2px;right:-4px}
+  .comp-stage{width:520px;height:300px;overflow:hidden;border:1px solid #ffffff10;border-radius:var(--r-lg);background:#161719;padding:132px var(--s3) var(--s3);position:relative}
+  .comp-stage .composer{border:0;padding:0;position:static}
+  .comp-stage .mention-pop{position:absolute;left:var(--s3);top:var(--s3);bottom:auto}
+
+
+  .lattice{display:flex;align-items:center;gap:var(--s2);margin-left:40px;color:var(--muted);font-size:12px}
+  .lat{display:grid;grid-template-columns:repeat(8,4px);grid-template-rows:repeat(2,4px);gap:2px;flex:0 0 auto}
+  .lat i{background:var(--live);opacity:.3;border-radius:1px;animation:wave 1.7s var(--ease) infinite}
+  .lat-time{font-family:var(--mono);font-size:10px;color:var(--caption);margin-left:auto;padding-right:var(--s1);font-variant-numeric:tabular-nums}
+  @keyframes wave{0%,100%{opacity:.15}45%{opacity:.95}}
+
+  .lat i:nth-child(1){animation-delay:0.0s}
+  .lat i:nth-child(2){animation-delay:0.085s}
+  .lat i:nth-child(3){animation-delay:0.17s}
+  .lat i:nth-child(4){animation-delay:0.255s}
+  .lat i:nth-child(5){animation-delay:0.34s}
+  .lat i:nth-child(6){animation-delay:0.425s}
+  .lat i:nth-child(7){animation-delay:0.51s}
+  .lat i:nth-child(8){animation-delay:0.595s}
+  .lat i:nth-child(9){animation-delay:0.04s}
+  .lat i:nth-child(10){animation-delay:0.125s}
+  .lat i:nth-child(11){animation-delay:0.21s}
+  .lat i:nth-child(12){animation-delay:0.295s}
+  .lat i:nth-child(13){animation-delay:0.38s}
+  .lat i:nth-child(14){animation-delay:0.465s}
+  .lat i:nth-child(15){animation-delay:0.55s}
+  .lat i:nth-child(16){animation-delay:0.635s}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:.55}50%{transform:scale(1.06);opacity:.15}}
+  @keyframes bubble{0%,100%{transform:translateY(0);opacity:.3}40%{transform:translateY(-4px);opacity:1}}
+  @keyframes rise{from{opacity:0;transform:translateY(8px);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}
+  @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+  @keyframes ping{0%,86%,100%{opacity:0;transform:translate(-50%,-50%) scale(1)}88%{opacity:.5}96%{opacity:0;transform:translate(-50%,-50%) scale(18)}}
+  @keyframes sonar{0%{transform:scale(1);opacity:.6}70%,100%{transform:scale(2.1);opacity:0}}
+  @keyframes sonarLine{0%,100%{opacity:.2;transform:scaleX(.4)}50%{opacity:1;transform:scaleX(1)}}
+  @keyframes sweep{0%{transform:translateX(-100%)}55%,100%{transform:translateX(100%)}}
+  @keyframes shimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="board">
+  <div class="shell">
+    <nav class="rail">
+      <div class="rail-mark"><img src="../assets/whale-black.png" alt="DeepSeek Harness"></div>
+      <button class="rail-btn on" aria-label="聊天室">
+        <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H11l-4.4 3.3c-.6.5-1.6 0-1.6-.8V6.5Z"/></svg>
+      </button>
+      <button class="rail-btn" aria-label="会话"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 10h8M8 14h5"/></svg></button>
+      <div class="rail-end">
+        <button class="rail-btn" aria-label="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg></button>
+      </div>
+    </nav>
+
+    <div class="panel">
+      <section class="col">
+        <div class="col-head">
+          <span class="col-title">聊天室</span><span class="count">2</span>
+          <span class="grow"></span>
+          <span class="link">+ 新建房间</span>
+        </div>
+        <div class="rooms">
+          <div class="room active">
+            <span class="room-dot"></span>
+            <div class="room-body">
+              <div class="room-top"><span class="room-name">Q4 复盘 · 现金流</span><span class="room-time">09:37</span></div>
+              <div class="room-preview">尾货 agent：尾货占退货的 62%，三款夏装清仓能把 Q4 …</div>
+            </div>
+          </div>
+          <div class="room">
+            <span class="room-dot off"></span>
+            <div class="room-body">
+              <div class="room-top"><span class="room-name">选品会</span></div>
+              <div class="room-preview">还没有消息</div>
+            </div>
+          </div>
+        </div>
+        <div class="side-foot">
+          <div class="foot-label"><b>我的 agent</b><span class="grow"></span><span class="link">+ 新建一个 agent</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <span class="chip">账期 agent <i class="x">×</i></span>
+            <span class="chip">退货 agent <i class="x">×</i></span>
+          </div>
+          <div class="foot-label">我的名字</div>
+          <div class="name-row"><input class="field" value="林岸" readonly></div>
+          <span class="link">+ 加入 LAN 房间</span>
+        </div>
+      </section>
+
+      <section class="col">
+        <header class="room-head">
+          <div class="room-head-top">
+            <h1 class="room-title">Q4 复盘 · 现金流</h1>
+            <span class="code">K7M2QD</span>
+            <span class="head-actions"><span class="link">邀请</span><span class="link">规则</span></span>
+          </div>
+          <div class="room-sub">把应付账期和退货率对一遍，产出下一版预算</div>
+        </header>
+
+        <div class="flow">
+          <div class="day">11 月 17 日</div>
+
+          <div class="msg mine">
+            <div class="avatar">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:30</span></div>
+              <div class="text">这批预算我按 45 天账期算的，<span class="at">@账期 agent</span> 先看缺口。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="avatar">账</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">账期 agent</span><span class="time">09:31</span></div>
+              <div class="text">45 天账期下，10 月缺口约 82 万，集中在第二周。把两笔大额应付款挪到 11/03，缺口降到 31 万。</div>
+            </div>
+          </div>
+
+          <div class="msg mine">
+            <div class="avatar">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:33</span></div>
+              <div class="text">那就先把尾货清仓价挂出来，预算按 7.1% 重算一版。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="avatar">退</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">退货 agent</span><span class="time">09:34</span></div>
+              <div class="text">尾货清仓价已经挂出去了，按 7.1% 重算 Q4 退货成本压到 14 万。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="avatar">周</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">周荻</span><span class="src">LAN · 周荻的 MacBook</span><span class="time">09:35</span></div>
+              <div class="text">我这边先把退货率放上来：上周华东仓冒到 7.1%。</div>
+            </div>
+          </div>
+
+          <div class="msg mine">
+            <div class="avatar">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:36</span></div>
+              <div class="text"><span class="at">@尾货 agent</span> 7.1% 里尾货占多少？</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="avatar live">尾</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">尾货 agent</span><span class="src">LAN · 周荻的 MacBook</span><span class="time">09:37</span></div>
+              <div class="text">尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。</div>
+            </div>
+          </div>
+
+          <div class="lattice">
+            <span class="lat"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span>账期 agent 正在算 11/03 的那笔</span><span class="lat-time">00:04</span>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="ident">以 <b>林岸</b> 的身份发言</div>
+          <div class="input-shell focus">
+            <textarea>@账期 agent 11/03 那两笔写进合同条款了吗</textarea>
+            <button class="icon-btn" aria-label="提及"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg></button>
+            <button class="send">发送</button>
+          </div>
+          <div class="foot"><span>5 人</span><span>·</span><span>2 LAN</span><span class="grow"></span><span>让全员说一轮</span></div>
+        </div>
+      </section>
+
+      <section class="col">
+        <div class="col-head"><span class="col-title">成员</span><span class="count">5</span></div>
+        <div class="members">
+          <div class="group">人</div>
+          <div class="member"><span class="avatar">林</span><div class="m-body"><div class="m-name">林岸</div><div class="m-sub">本机</div></div></div>
+          <div class="member"><span class="avatar">周</span><div class="m-body"><div class="m-name">周荻 <span class="lan-tag">LAN</span></div><div class="m-sub">周荻的 MacBook</div></div></div>
+          <div class="group">agent</div>
+          <div class="member"><span class="avatar">账</span><div class="m-body"><div class="m-name">账期 agent</div><div class="m-sub">应付账期与现金流缺口</div></div></div>
+          <div class="member"><span class="avatar">退</span><div class="m-body"><div class="m-name">退货 agent</div><div class="m-sub">拆退货率与热销款损耗</div></div></div>
+          <div class="member"><span class="avatar live">尾</span><div class="m-body"><div class="m-name">尾货 agent <span class="lan-tag">LAN</span></div><div class="m-sub">拆尾货与退货结构</div></div></div>
+          <span class="link" style="padding:var(--s2)">+ 加一个 agent</span>
+        </div>
+        <div class="auth">
+          <div class="auth-head">本机授权 <small>只影响这台机器</small></div>
+          <div class="seg" data-v="ask">
+            <span class="thumb"></span>
+            <button>只读</button><button class="on">授权后执行</button><button>完全授权</button>
+          </div>
+          <div class="auth-note">别的机器派来的回合先问一次，点了允许才跑。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="pill arrive" role="button" aria-label="打开悬浮窗">
+    <span class="pill-mark"><img src="../assets/whale-black.png" alt=""><span class="sonar"></span></span>
+    <span class="pill-body">
+      <span class="pill-room">Q4 复盘 · 现金流 <span class="unread">2</span></span>
+      <span class="pill-say"><b>尾货 agent</b>：尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。</span>
+    </span>
+    <span class="pill-meta"><span>5 人</span><span>2 LAN</span></span>
+    <button class="pill-chev" aria-label="展开"><svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button>
+    <span class="pill-live"></span>
+  </div>
+</div>
+
+<div class="detail">
+  <div class="d-head">
+    <div>
+      <div class="d-kicker">A · 深渊回声 · 组件</div>
+      <h2 class="d-title">托盘与浮窗</h2>
+      <p class="d-sub">鲸是屋主：呼吸、声呐、冒泡都只围绕它，不再用一个聊天气泡当门牌。</p>
+    </div>
+  </div>
+
+  <div class="d-row">
+    <div class="d-cell">
+      <span class="d-label">静止 · 呼吸</span>
+      <div class="stage"><div class="pill static">
+        <span class="pill-mark"><img src="../assets/whale-black.png" alt=""><span class="sonar" style="animation-delay:-9s"></span></span>
+        <span class="pill-body"><span class="pill-room">Q4 复盘 · 现金流</span><span class="pill-say">最后一次发言 · 09:37</span></span>
+        <span class="pill-meta"><span>5 人</span></span>
+        <button class="pill-chev"><svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button>
+      </div></div>
+    </div>
+
+    <div class="d-cell">
+      <span class="d-label">新消息 · 声呐环</span>
+      <div class="stage"><div class="pill static arrive">
+        <span class="pill-mark"><img src="../assets/whale-black.png" alt=""><span class="sonar" style="animation-delay:-1.2s"></span></span>
+        <span class="pill-body"><span class="pill-room">Q4 复盘 · 现金流 <span class="unread">2</span></span><span class="pill-say"><b>尾货 agent</b>：尾货占退货的 62%</span></span>
+        <span class="pill-meta"><span class="pill-speak"><span class="bubbles"><i></i><i></i><i></i></span>说</span></span>
+        <button class="pill-chev"><svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button>
+      </div></div>
+    </div>
+
+    <div class="d-cell">
+      <span class="d-label">拖到角落 · 只留一枚圆标</span>
+      <div class="stage" style="height:120px;display:flex;align-items:center;justify-content:center">
+        <div class="orb"><img src="../assets/whale-black.png" alt=""><span class="orb-ring"></span><span class="unread orb-badge">2</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-row">
+    <div class="d-cell">
+      <span class="d-label">展开 · 浮窗</span>
+      <div class="float">
+        <div class="f-head">
+          <span class="f-mark"><img src="../assets/whale-black.png" alt=""></span>
+          <div><div class="f-title">Q4 复盘 · 现金流</div><div class="f-sub">5 人 · 2 LAN</div></div>
+          <button class="f-x">×</button>
+        </div>
+        <div class="f-flow">
+          <div class="f-msg"><span class="avatar">周</span><div class="msg-body"><div class="meta"><span class="name">周荻</span><span class="src">LAN</span><span class="time">09:35</span></div><div class="text">上周华东仓冒到 7.1%。</div></div></div>
+          <div class="f-msg"><span class="avatar">尾</span><div class="msg-body"><div class="meta"><span class="name">尾货 agent</span><span class="src">LAN</span><span class="time">09:37</span></div><div class="text">尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。</div></div></div>
+          <div class="f-msg"><span class="avatar">账</span><div class="msg-body"><div class="meta"><span class="name">账期 agent</span><span class="time">09:38</span></div><div class="text">11/03 那两笔挪款我写进合同条款了，缺口才真的降到 31 万。</div></div></div>
+        </div>
+        <div class="f-composer">
+          <div class="f-input"><span>说点什么…</span><button class="f-send">发送</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-cell" style="flex:1">
+      <span class="d-label">这套语言里的动效</span>
+      <div class="stage" style="width:620px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--s4) var(--s5);font-size:12px;color:var(--muted)">
+          <div><b style="color:var(--fg);font-weight:500">鲸呼吸</b>　6s 一次，透明度 .55→.15，只在标记外一圈</div>
+          <div><b style="color:var(--fg);font-weight:500">声呐</b>　新消息到达时 2.4s 一次扩散，只打一环</div>
+          <div><b style="color:var(--fg);font-weight:500">冒泡</b>　正在发言的三颗气泡，4px 上浮，错 0.18s</div>
+          <div><b style="color:var(--fg);font-weight:500">落水</b>　新消息 8px 上浮 + 2px 模糊，260ms 收住</div>
+          <div><b style="color:var(--fg);font-weight:500">涟漪</b>　发送按钮中心一点扩散，只在真发出去时</div>
+          <div><b style="color:var(--fg);font-weight:500">光扫</b>　房间头一条 1px 冷光每 9s 横穿一次</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-row">
+    <div class="d-cell">
+      <span class="d-label">输入器 · 聚焦与 @ 候选</span>
+      <div class="comp-stage">
+        <div class="composer">
+          <div class="ident">以 <b>林岸</b> 的身份发言</div>
+          <div class="input-shell focus">
+            <textarea>@</textarea>
+            <button class="icon-btn" aria-label="提及"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg></button>
+            <button class="send">发送</button>
+          </div>
+          <div class="foot"><span>5 人</span><span>·</span><span>2 LAN</span><span class="grow"></span><span>让全员说一轮</span></div>
+          <div class="mention-pop">
+            <div class="mi on"><span class="avatar">账</span>账期 agent <small>应付与缺口</small></div>
+            <div class="mi"><span class="avatar">退</span>退货 agent <small>退货率</small></div>
+            <div class="mi"><span class="avatar">尾</span>尾货 agent <small>LAN</small></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="d-cell" style="flex:1">
+      <span class="d-label">标记体系</span>
+      <div class="stage" style="height:auto;display:flex;gap:var(--s5);align-items:center;padding:var(--s5)">
+        <div style="display:flex;align-items:center;gap:var(--s2)"><span class="rail-mark" style="box-shadow:none"><img src="../assets/whale-black.png" alt=""></span><span style="font-size:12px;color:var(--muted)">侧栏入口</span></div>
+        <div style="display:flex;align-items:center;gap:var(--s2)"><span class="f-mark"><img src="../assets/whale-black.png" alt=""></span><span style="font-size:12px;color:var(--muted)">浮窗头</span></div>
+        <div style="display:flex;align-items:center;gap:var(--s2)"><span class="avatar live" style="width:32px;height:32px">林</span><span style="font-size:12px;color:var(--muted)">正在说话的人</span></div>
+        <div style="display:flex;align-items:center;gap:var(--s2)"><span class="lan-tag">LAN</span><span style="font-size:12px;color:var(--muted)">跨机器</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>B · 墨鲸手记 — 方向稿</title>
+<style>
+  :root{
+    --bg:#131211; --paper:#161514; --paper-2:#1a1917; --paper-3:#1f1d1a;
+    --line:#f0ead80f; --line-2:#f0ead81c; --line-3:#f0ead82e;
+    --fg:#f1ece1; --muted:#bab2a4; --caption:#9a9284;
+    --seal:#c65a3f; --seal-soft:#c65a3f24;
+    --r:4px; --r-lg:6px;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+    --ease:cubic-bezier(.2,.8,.2,1);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --serif:"Songti SC","Noto Serif SC",STSong,SimSun,Georgia,serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace;
+    --shadow-2:0 26px 60px -24px #000000d9,0 2px 6px #00000059;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0d0c0b;color:var(--fg);font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .board{position:relative;width:1440px;height:900px;overflow:hidden;background:var(--bg)}
+  .board::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E")}
+  .shell{position:relative;display:flex;height:900px}
+
+  .rail{width:64px;flex:0 0 64px;display:flex;flex-direction:column;align-items:center;gap:var(--s2);padding:var(--s4) 0;border-right:1px solid var(--line);background:#141312}
+  .rail-mark{width:32px;height:32px;border-radius:3px;display:flex;align-items:center;justify-content:center;background:#f4f0e6;box-shadow:0 0 0 1px #ffffff1f}
+  .rail-mark img{width:21px;height:auto}
+  .rail-btn{width:32px;height:32px;border-radius:3px;display:flex;align-items:center;justify-content:center;color:#8f887c;border:0;background:transparent;position:relative}
+  .rail-btn.on{color:var(--fg);border:1px solid var(--line-2)}
+  .rail-btn.on::after{content:"";position:absolute;left:-16px;top:15px;width:8px;height:1px;background:var(--fg)}
+  .rail-btn svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.5}
+  .rail-end{margin-top:auto;display:flex;flex-direction:column;gap:var(--s2);align-items:center}
+
+  .panel{flex:1;min-width:0;display:grid;grid-template-columns:248px minmax(0,1fr) 264px}
+  .col{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .col+.col{border-left:1px solid var(--line-2)}
+  .col-head{display:flex;align-items:baseline;gap:var(--s2);padding:var(--s4) var(--s3) var(--s2);min-height:48px}
+  .col-title{font-family:var(--serif);font-size:14px;font-weight:600;letter-spacing:.08em}
+  .count{font-family:var(--mono);font-size:11px;color:var(--caption)}
+  .grow{flex:1;min-width:0}
+
+  .rooms{padding:0 var(--s3)}
+  .room{display:flex;gap:var(--s2);padding:var(--s3) 0;border-bottom:1px solid var(--line);position:relative}
+  .room:first-child{border-top:1px solid var(--line)}
+  .room.active .room-name{color:var(--fg)}
+  .room-marker{width:9px;height:9px;flex:0 0 auto;margin-top:4px;border:1px solid var(--line-3);background:transparent}
+  .room.active .room-marker{background:var(--fg);border-color:var(--fg)}
+  .room-body{flex:1;min-width:0}
+  .room-top{display:flex;align-items:baseline;gap:var(--s2)}
+  .room-name{font-family:var(--serif);font-size:14px;color:#cfc8ba;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .room-time{font-family:var(--mono);font-size:10px;color:var(--caption)}
+  .room-preview{font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .side-foot{margin-top:auto;border-top:1px solid var(--line-2);padding:var(--s3) var(--s4) var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+  .foot-label{display:flex;align-items:baseline;gap:var(--s2);font-size:12px;color:var(--muted)}
+  .foot-label b{color:var(--fg);font-weight:500;font-family:var(--serif);font-size:13px;letter-spacing:.04em}
+  .sealchip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 var(--s2);border:1px solid var(--line-2);border-radius:2px;font-size:12px;color:#d8d1c4}
+  .sealchip .x{color:var(--caption);font-style:normal}
+  .name-row{display:flex}
+  .field{flex:1;height:32px;border:0;border-bottom:1px solid var(--line-3);background:transparent;color:var(--fg);padding:0 0 0 2px;font:inherit;font-size:14px;font-family:var(--serif);letter-spacing:.06em}
+  .link{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:4px}
+
+  .room-head{padding:var(--s4) var(--s5) var(--s3);border-bottom:1px solid var(--line-2);position:relative}
+  .room-head::after{content:"";position:absolute;left:0;right:0;bottom:-4px;height:1px;background:var(--line)}
+  .room-head-top{display:flex;align-items:baseline;gap:var(--s3)}
+  .room-title{font-family:var(--serif);font-size:22px;font-weight:600;letter-spacing:.02em;margin:0}
+  .code{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--caption)}
+  .head-actions{margin-left:auto;display:flex;gap:var(--s3)}
+  .head-actions .link{font-size:12px;padding-bottom:2px;border-bottom:1px solid transparent}
+  .head-actions .link:hover{border-color:var(--line-3)}
+  .room-sub{font-size:12px;color:var(--caption);margin-top:4px;font-family:var(--serif);letter-spacing:.03em}
+
+  .flow{flex:1;padding:var(--s4) var(--s5) var(--s4);display:flex;flex-direction:column;gap:var(--s4);overflow:hidden}
+  .day{display:flex;align-items:center;gap:var(--s3);color:var(--caption);font-size:11px;font-family:var(--serif);letter-spacing:.16em}
+  .day::before,.day::after{content:"";height:1px;flex:1;background:var(--line)}
+  .day::before{max-width:56px;flex:0 0 56px}
+
+  .msg{display:flex;gap:var(--s3);align-items:flex-start;position:relative}
+  .seal{width:26px;height:26px;flex:0 0 auto;border-radius:2px;display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:13px;border:1px solid var(--line-3);color:var(--fg);background:transparent}
+  .seal.me{background:#f1ece1;color:#161514;border-color:#f1ece1}
+  .seal.remote{border-style:dashed;border-color:#c65a3f66;color:#e8b9a3}
+  .msg-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;position:relative}
+  .meta{display:flex;align-items:baseline;gap:var(--s2);font-size:12px}
+  .name{font-family:var(--serif);font-size:14px;font-weight:600;letter-spacing:.03em}
+  .src{font-size:11px;color:#c65a3fcc;font-family:var(--serif);letter-spacing:.04em}
+  .time{font-family:var(--mono);font-size:10px;color:var(--caption);letter-spacing:.04em}
+  .text{font-size:15px;line-height:1.8;max-width:660px;white-space:pre-wrap;letter-spacing:.01em}
+  .text .at{color:#e8b9a3;border-bottom:1px solid #c65a3f66}
+  .msg.remote .msg-body::before{content:"";position:absolute;left:-14px;top:4px;bottom:2px;width:1px;background:repeating-linear-gradient(180deg,#c65a3f66 0 4px,transparent 4px 8px)}
+  .msg.mine{flex-direction:row-reverse;text-align:right}
+  .msg.mine .msg-body{align-items:flex-end}
+  .msg.mine .text{background:#f1ece10a;border:1px solid var(--line);padding:var(--s2) var(--s3);border-radius:2px}
+  .msg.fresh{animation:ink .8s var(--ease) both}
+  .msg.fresh .msg-body::after{content:"";position:absolute;left:-6px;top:6px;width:18px;height:18px;border-radius:50%;background:#f1ece11f;filter:blur(6px);animation:bloom 1.2s var(--ease) both}
+  .speaking{display:flex;align-items:center;gap:var(--s2);margin-left:38px;color:var(--muted);font-size:12px;font-family:var(--serif);letter-spacing:.04em}
+  .speaking .inkline{display:inline-block;height:1px;width:28px;background:var(--seal);animation:underline 2.4s var(--ease) infinite}
+
+  .composer{padding:var(--s2) var(--s5) var(--s3);border-top:1px solid var(--line-2);display:flex;flex-direction:column;gap:var(--s2);position:relative}
+  .ident{font-size:12px;color:var(--caption);font-family:var(--serif);letter-spacing:.04em}
+  .ident b{color:var(--fg);font-weight:500}
+  .input-shell{display:flex;align-items:flex-end;gap:var(--s2);border-bottom:1px solid var(--line-3);padding:2px 0 var(--s1)}
+  .input-shell.focus{border-color:var(--seal)}
+  .input-shell textarea{flex:1;min-height:36px;max-height:36px;resize:none;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;font-size:15px;line-height:1.6;padding:6px 0}
+  .input-shell textarea::placeholder{color:#6f685e}
+  .icon-btn{width:28px;height:28px;border:0;background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center}
+  .icon-btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.4}
+  .send{width:34px;height:34px;border:1px solid var(--line-3);border-radius:2px;background:transparent;color:var(--fg);font-family:var(--serif);font-size:14px;position:relative}
+  .send:hover{background:#f1ece114}
+  .foot{display:flex;gap:var(--s3);font-family:var(--mono);font-size:10px;color:var(--caption);letter-spacing:.06em}
+  .foot .grow{flex:1}
+
+  .members{padding:0 var(--s3) var(--s4);display:flex;flex-direction:column}
+  .group{font-family:var(--serif);font-size:11px;letter-spacing:.2em;color:var(--caption);padding:var(--s4) 2px var(--s2);border-bottom:1px solid var(--line)}
+  .member{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) 2px;border-bottom:1px solid var(--line)}
+  .member .seal{width:24px;height:24px;font-size:12px}
+  .m-body{min-width:0;flex:1}
+  .m-name{font-size:13px;font-family:var(--serif);letter-spacing:.03em}
+  .m-sub{font-size:11px;color:var(--caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lan{font-size:10px;color:#c65a3fcc;font-family:var(--serif);letter-spacing:.1em;border:1px solid #c65a3f4d;padding:0 4px;line-height:14px}
+  .auth{margin-top:auto;padding:var(--s3) var(--s4) var(--s3);border-top:1px solid var(--line-2)}
+  .auth-head{display:flex;align-items:baseline;gap:var(--s2);font-family:var(--serif);font-size:13px;letter-spacing:.04em}
+  .auth-head small{margin-left:auto;font-family:var(--sans);font-size:11px;color:var(--caption)}
+  .seg{position:relative;display:grid;grid-template-columns:repeat(3,1fr);margin-top:var(--s2);border:1px solid var(--line-2)}
+  .seg .thumb{position:absolute;top:0;bottom:0;left:0;width:calc(100%/3);background:#f1ece114;transition:transform .35s var(--ease)}
+  .seg[data-v="ask"] .thumb{transform:translateX(100%)}
+  .seg[data-v="full"] .thumb{transform:translateX(200%)}
+  .seg button{position:relative;height:28px;border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-size:12px}
+  .seg button:last-child{border-right:0}
+  .seg button.on{color:var(--fg);font-weight:500}
+  .auth-note{font-size:11px;line-height:1.7;color:var(--caption);margin-top:var(--s2)}
+
+  /* 票签：托盘 */
+  .ticket{position:absolute;right:24px;bottom:176px;display:flex;align-items:stretch;height:60px;width:332px;background:#1d1b18;border:1px solid #f0ead824;box-shadow:var(--shadow-2);border-radius:3px;overflow:hidden}
+  .ticket::before{content:"";position:absolute;left:-7px;top:50%;width:12px;height:12px;margin-top:-6px;border-radius:50%;background:#131211;border:1px solid #f0ead824}
+  .ticket::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--seal);opacity:.85}
+  .t-mark{width:56px;flex:0 0 56px;display:flex;align-items:center;justify-content:center;border-right:1px dashed #f0ead81f}
+  .t-mark img{width:26px;height:auto}
+  .t-body{flex:1;min-width:0;padding:9px var(--s3) 8px;display:flex;flex-direction:column;gap:2px;justify-content:center}
+  .t-room{font-family:var(--serif);font-size:13px;letter-spacing:.04em;display:flex;align-items:center;gap:6px}
+  .t-say{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t-say b{color:#e4ded2;font-weight:500}
+  .t-stub{width:58px;flex:0 0 58px;border-left:1px dashed #f0ead81f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;position:relative}
+  .t-stub .n{font-family:var(--mono);font-size:16px;line-height:1;color:var(--seal);font-weight:600;animation:pop .4s var(--ease) both}
+  .t-stub .u{font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--caption)}
+  .t-stub::after{content:"";position:absolute;inset:6px;border:1px solid #c65a3f33;border-radius:2px;animation:sealring 2.2s var(--ease) infinite;opacity:0}
+
+  .detail{width:1440px;padding:var(--s6);background:#100f0e;border-top:1px solid #f0ead814;position:relative}
+  .d-head{display:flex;flex-direction:column;gap:2px}
+  .d-kicker{font-family:var(--mono);font-size:10px;letter-spacing:.24em;color:#c65a3fcc}
+  .d-title{font-family:var(--serif);font-size:24px;font-weight:600;margin:0;letter-spacing:.04em}
+  .d-sub{font-size:12px;color:var(--caption);margin:2px 0 0}
+  .d-row{display:flex;gap:var(--s5);align-items:flex-start;margin-top:var(--s6)}
+  .d-cell{display:flex;flex-direction:column;gap:var(--s2)}
+  .d-label{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--caption)}
+  .stage{background:#171614;border:1px solid #f0ead814;padding:var(--s4)}
+  .ticket.static{position:relative;right:auto;bottom:auto}
+  .float{width:404px;border:1px solid #f0ead81f;background:#1a1917;box-shadow:var(--shadow-2);border-radius:2px;overflow:hidden}
+  .f-head{padding:var(--s3) var(--s3) var(--s2);border-bottom:1px solid var(--line-2);position:relative}
+  .f-head::after{content:"";position:absolute;left:var(--s3);right:var(--s3);bottom:-3px;height:1px;background:var(--line)}
+  .f-top{display:flex;align-items:center;gap:var(--s2)}
+  .f-mark{width:26px;height:26px;border-radius:2px;background:#f4f0e6;display:flex;align-items:center;justify-content:center}
+  .f-mark img{width:17px;height:auto}
+  .f-title{font-family:var(--serif);font-size:15px;letter-spacing:.04em}
+  .f-sub{font-family:var(--mono);font-size:10px;color:var(--caption);letter-spacing:.08em}
+  .f-x{margin-left:auto;width:24px;height:24px;border:0;background:transparent;color:var(--caption);font-size:14px}
+  .f-flow{padding:var(--s3);display:flex;flex-direction:column;gap:var(--s3);max-height:250px;overflow:hidden}
+  .f-msg{display:flex;gap:var(--s2);font-size:13px}
+  .f-msg .seal{width:22px;height:22px;font-size:11px}
+  .f-msg .meta{font-size:11px}
+  .f-msg .name{font-size:13px}
+  .f-msg .text{font-size:14px;line-height:1.7}
+  .f-comp{border-top:1px solid var(--line-2);padding:var(--s2) var(--s3) var(--s3);display:flex;align-items:center;gap:var(--s2)}
+  .f-input{flex:1;height:36px;border-bottom:1px solid var(--line-3);display:flex;align-items:center;color:#6f685e;font-size:14px}
+  .f-send{width:32px;height:32px;border:1px solid var(--line-3);border-radius:2px;background:transparent;color:var(--fg);font-family:var(--serif)}
+  .stamp{position:relative;width:120px;height:120px;display:flex;align-items:center;justify-content:center}
+  .stamp .sq{position:absolute;width:78px;height:78px;border:2px solid var(--seal);border-radius:4px;display:flex;align-items:center;justify-content:center;transform:rotate(-7deg);animation:stamp .9s var(--ease) both}
+  .stamp .sq img{width:42px;height:auto;opacity:.85;filter:none}
+  .stamp .ripple{position:absolute;width:78px;height:78px;border:1px solid #c65a3f66;border-radius:6px;animation:stampRing 1.2s var(--ease) both}
+  .motion-table{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3) var(--s5);font-size:12px;color:var(--muted);line-height:1.7}
+  .motion-table b{color:var(--fg);font-weight:500;font-family:var(--serif);letter-spacing:.04em}
+
+
+  .thought{display:flex;align-items:center;gap:var(--s3);margin-left:38px;color:var(--muted);font-size:12px;font-family:var(--serif);letter-spacing:.04em;border-bottom:1px solid var(--line);padding-bottom:var(--s2)}
+  .thought .inkline{display:inline-block;height:1px;width:28px;background:var(--seal);animation:underline 2.4s var(--ease) infinite}
+  .t-time{font-family:var(--mono);font-size:10px;color:var(--caption);margin-left:auto;font-variant-numeric:tabular-nums}
+
+  @keyframes ink{from{opacity:0;transform:translateY(6px);filter:blur(3px)}to{opacity:1;transform:none;filter:none}}
+  @keyframes bloom{0%{transform:scale(.2);opacity:.9}70%{opacity:.25}100%{transform:scale(3.4);opacity:0}}
+  @keyframes underline{0%,100%{width:12px;opacity:.5}50%{width:44px;opacity:1}}
+  @keyframes pop{from{transform:scale(.5);opacity:0}to{transform:scale(1);opacity:1}}
+  @keyframes sealring{0%{transform:scale(.94);opacity:.8}60%,100%{transform:scale(1.12);opacity:0}}
+  @keyframes stamp{0%{transform:rotate(-7deg) scale(1.7);opacity:0}35%{opacity:1}100%{transform:rotate(-7deg) scale(1);opacity:1}}
+  @keyframes stampRing{0%{transform:scale(.8);opacity:.9}100%{transform:scale(1.6);opacity:0}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="board">
+  <div class="shell">
+    <nav class="rail">
+      <div class="rail-mark"><img src="../assets/whale-black.png" alt="DeepSeek Harness"></div>
+      <button class="rail-btn on" aria-label="聊天室"><svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H11l-4.4 3.3c-.6.5-1.6 0-1.6-.8V6.5Z"/></svg></button>
+      <button class="rail-btn" aria-label="会话"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 10h8M8 14h5"/></svg></button>
+      <div class="rail-end"><button class="rail-btn" aria-label="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg></button></div>
+    </nav>
+
+    <div class="panel">
+      <section class="col">
+        <div class="col-head"><span class="col-title">聊天室</span><span class="count">02</span><span class="grow"></span><span class="link">新建</span></div>
+        <div class="rooms">
+          <div class="room active">
+            <span class="room-marker"></span>
+            <div class="room-body">
+              <div class="room-top"><span class="room-name">Q4 复盘 · 现金流</span><span class="room-time">09:37</span></div>
+              <div class="room-preview">尾货 agent：尾货占退货的 62%…</div>
+            </div>
+          </div>
+          <div class="room">
+            <span class="room-marker"></span>
+            <div class="room-body">
+              <div class="room-top"><span class="room-name">选品会</span></div>
+              <div class="room-preview">还没有消息</div>
+            </div>
+          </div>
+        </div>
+        <div class="side-foot">
+          <div class="foot-label"><b>我的 agent</b><span class="grow"></span><span class="link">新建</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <span class="sealchip">账期 agent <i class="x">×</i></span>
+            <span class="sealchip">退货 agent <i class="x">×</i></span>
+          </div>
+          <div class="foot-label"><b>我的名字</b></div>
+          <div class="name-row"><input class="field" value="林岸" readonly></div>
+          <span class="link">+ 加入 LAN 房间</span>
+        </div>
+      </section>
+
+      <section class="col">
+        <header class="room-head">
+          <div class="room-head-top">
+            <h1 class="room-title">Q4 复盘 · 现金流</h1>
+            <span class="code">K7M2QD</span>
+            <span class="head-actions"><span class="link">邀请</span><span class="link">规则</span></span>
+          </div>
+          <div class="room-sub">把应付账期和退货率对一遍，产出下一版预算</div>
+        </header>
+
+        <div class="flow">
+          <div class="day">11 月 17 日</div>
+
+          <div class="msg mine">
+            <div class="seal me">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:30</span></div>
+              <div class="text">这批预算我按 45 天账期算的，<span class="at">@账期 agent</span> 先看缺口。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="seal">账</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">账期 agent</span><span class="time">09:31</span></div>
+              <div class="text">45 天账期下，10 月缺口约 82 万，集中在第二周。把两笔大额应付款挪到 11/03，缺口降到 31 万。</div>
+            </div>
+          </div>
+
+          <div class="msg mine">
+            <div class="seal me">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:33</span></div>
+              <div class="text">那就先把尾货清仓价挂出来，预算按 7.1% 重算一版。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="seal">退</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">退货 agent</span><span class="time">09:34</span></div>
+              <div class="text">尾货清仓价已经挂出去了，按 7.1% 重算 Q4 退货成本压到 14 万。</div>
+            </div>
+          </div>
+
+          <div class="msg remote">
+            <div class="seal remote">周</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">周荻</span><span class="src">LAN · 周荻的 MacBook</span><span class="time">09:35</span></div>
+              <div class="text">我这边先把退货率放上来：上周华东仓冒到 7.1%。</div>
+            </div>
+          </div>
+
+          <div class="msg mine">
+            <div class="seal me">林</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">林岸（我）</span><span class="time">09:36</span></div>
+              <div class="text"><span class="at">@尾货 agent</span> 7.1% 里尾货占多少？</div>
+            </div>
+          </div>
+
+          <div class="msg remote fresh">
+            <div class="seal remote">尾</div>
+            <div class="msg-body">
+              <div class="meta"><span class="name">尾货 agent</span><span class="src">LAN · 周荻的 MacBook</span><span class="time">09:37</span></div>
+              <div class="text">尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。</div>
+            </div>
+          </div>
+
+          <div class="thought"><span class="inkline"></span>账期 agent 正在写 11/03 的条款 <span class="t-time">00:04</span></div>
+        </div>
+
+        <div class="composer">
+          <div class="ident">以 <b>林岸</b> 的身份落笔</div>
+          <div class="input-shell focus">
+            <textarea>@账期 agent 11/03 那两笔写进合同条款了吗</textarea>
+            <button class="icon-btn" aria-label="提及"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg></button>
+            <button class="send">发</button>
+          </div>
+          <div class="foot"><span>5 人</span><span>·</span><span>2 LAN</span><span class="grow"></span><span>让全员说一轮</span></div>
+        </div>
+      </section>
+
+      <section class="col">
+        <div class="col-head"><span class="col-title">成员</span><span class="count">05</span></div>
+        <div class="members">
+          <div class="group">人</div>
+          <div class="member"><span class="seal me">林</span><div class="m-body"><div class="m-name">林岸</div><div class="m-sub">本机</div></div></div>
+          <div class="member"><span class="seal remote">周</span><div class="m-body"><div class="m-name">周荻 <span class="lan">LAN</span></div><div class="m-sub">周荻的 MacBook</div></div></div>
+          <div class="group">agent</div>
+          <div class="member"><span class="seal">账</span><div class="m-body"><div class="m-name">账期 agent</div><div class="m-sub">应付账期与现金流缺口</div></div></div>
+          <div class="member"><span class="seal">退</span><div class="m-body"><div class="m-name">退货 agent</div><div class="m-sub">拆退货率与热销款损耗</div></div></div>
+          <div class="member"><span class="seal remote">尾</span><div class="m-body"><div class="m-name">尾货 agent <span class="lan">LAN</span></div><div class="m-sub">拆尾货与退货结构</div></div></div>
+          <span class="link" style="padding:var(--s2) 2px">+ 加一个 agent</span>
+        </div>
+        <div class="auth">
+          <div class="auth-head">本机授权 <small>只影响这台机器</small></div>
+          <div class="seg" data-v="ask"><span class="thumb"></span><button>只读</button><button class="on">授权后执行</button><button>完全授权</button></div>
+          <div class="auth-note">别的机器派来的回合先问一次，点了允许才跑。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="ticket" role="button">
+    <div class="t-mark"><img src="../assets/whale-white.png" alt=""></div>
+    <div class="t-body">
+      <div class="t-room">Q4 复盘 · 现金流</div>
+      <div class="t-say"><b>尾货 agent</b>：尾货占退货的 62%，夏装清仓能把退货成本压回 15 万</div>
+    </div>
+    <div class="t-stub"><span class="n">02</span><span class="u">NEW</span></div>
+  </div>
+</div>
+
+<div class="detail">
+  <div class="d-head">
+    <div class="d-kicker">B · 墨鲸手记 · 组件</div>
+    <h2 class="d-title">票签、印章与浮窗</h2>
+    <p class="d-sub">一间屋子像一本手记：鲸是扉页上的墨痕，发言是落笔，发送是盖章。</p>
+  </div>
+
+  <div class="d-row">
+    <div class="d-cell">
+      <span class="d-label">静止 · 票签</span>
+      <div class="stage"><div class="ticket static" style="--x:0">
+        <div class="t-mark"><img src="../assets/whale-white.png" alt=""></div>
+        <div class="t-body"><div class="t-room">Q4 复盘 · 现金流</div><div class="t-say">最后一次落笔 · 09:37</div></div>
+        <div class="t-stub"><span class="n" style="color:var(--caption);font-size:11px">5</span><span class="u">人</span></div>
+      </div></div>
+    </div>
+    <div class="d-cell">
+      <span class="d-label">新消息 · 缺口铃</span>
+      <div class="stage"><div class="ticket static">
+        <div class="t-mark"><img src="../assets/whale-white.png" alt=""></div>
+        <div class="t-body"><div class="t-room">Q4 复盘 · 现金流</div><div class="t-say"><b>尾货 agent</b>：尾货占退货的 62%</div></div>
+        <div class="t-stub"><span class="n">02</span><span class="u">NEW</span></div>
+      </div></div>
+    </div>
+    <div class="d-cell">
+      <span class="d-label">发送 · 盖章</span>
+      <div class="stage" style="display:flex;align-items:center;justify-content:center;height:132px">
+        <div class="stamp"><span class="ripple"></span><span class="sq"><img src="../assets/whale-white.png" alt=""></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-row">
+    <div class="d-cell">
+      <span class="d-label">展开 · 浮窗里的手记</span>
+      <div class="float">
+        <div class="f-head">
+          <div class="f-top"><span class="f-mark"><img src="../assets/whale-black.png" alt=""></span><div><div class="f-title">Q4 复盘 · 现金流</div><div class="f-sub">5 人 · 2 LAN</div></div><button class="f-x">×</button></div>
+        </div>
+        <div class="f-flow">
+          <div class="f-msg remote"><span class="seal remote">周</span><div class="msg-body"><div class="meta"><span class="name">周荻</span><span class="src">LAN</span><span class="time">09:35</span></div><div class="text">上周华东仓冒到 7.1%。</div></div></div>
+          <div class="f-msg remote"><span class="seal remote">尾</span><div class="msg-body"><div class="meta"><span class="name">尾货 agent</span><span class="src">LAN</span><span class="time">09:37</span></div><div class="text">尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。</div></div></div>
+          <div class="f-msg"><span class="seal">账</span><div class="msg-body"><div class="meta"><span class="name">账期 agent</span><span class="time">09:38</span></div><div class="text">11/03 那两笔挪款我写进合同条款了。</div></div></div>
+        </div>
+        <div class="f-comp"><div class="f-input">说点什么…</div><button class="f-send">发</button></div>
+      </div>
+    </div>
+    <div class="d-cell" style="flex:1">
+      <span class="d-label">这套语言里的动效</span>
+      <div class="stage" style="width:640px">
+        <div class="motion-table">
+          <div><b>落墨</b>　新消息从 3px 模糊里显影，600ms 收住</div>
+          <div><b>盖章</b>　发送后鲸印从 1.7 倍按下，带一圈压痕扩散</div>
+          <div><b>划线</b>　正在发言的名字下面，一条红线来回生长</div>
+          <div><b>翻页</b>　切房间时一条 1px 竖线从左到右扫过</div>
+          <div><b>缺口铃</b>　票签缺口处一圈红环，2.2s 一次，只在有新话时</div>
+          <div><b>显影</b>　连续同一人发言时，徽记不出第二遍</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

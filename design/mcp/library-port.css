@@ -1,0 +1,111 @@
+      /* ==================================================================
+       * 2026-11-23 重做：版式与尺寸照 reactbits-pro 的 appui 三份源码
+       *   Chat 1        —— 房间列表 / 消息行 / 输入器
+       *   AI Chat 6     —— 成员与活动栏（发丝时间轴、6px 圆点）
+       *   AI Chat 5     —— 本机授权卡（双层框 + Show request + 白主键）
+       * 只把它的 neutral 灰阶换成宿主 token；尺寸、圆角、字号照抄。
+       * ================================================================== */
+      '.cr-main,.cr-float,.cr-toast-wrap,.cr-approve{--cr-r-sm:6px;--cr-r:8px;--cr-r-lg:10px;--cr-r-xl:14px;--cr-fill-1:color-mix(in srgb,var(--cr-fg) 4%,transparent);--cr-fill-2:color-mix(in srgb,var(--cr-fg) 7%,transparent);--cr-fill-3:color-mix(in srgb,var(--cr-fg) 11%,transparent);--cr-body:var(--dsw-alias-label-secondary,#cfd3d6);--cr-whale:url("data:image/png;base64,WHALE_B64")}',
+      '.cr-whale{display:inline-block;flex:0 0 auto;background:currentColor;-webkit-mask:var(--cr-whale) center/contain no-repeat;mask:var(--cr-whale) center/contain no-repeat}',
+      '.cr-float-mark .cr-whale,.cr-float-pill .cr-whale{width:15px;height:15px}',
+
+      /* 列头：11px 大写标签，和素材库里的 Channels / Activity 一个层级 */
+      '.cr-col-head{min-height:0;padding:14px 12px 6px;gap:6px}',
+      '.cr-col-title{font-size:11px;line-height:1.4;letter-spacing:.06em;text-transform:uppercase;color:var(--cr-caption);font-weight:500}',
+      '.cr-count{font-size:11px;color:var(--cr-caption)}',
+      '.cr-col-foot{padding:10px 12px 12px;gap:6px;border-top:1px solid var(--cr-line)}',
+
+      /* 房间行：8px 圆角、24px 徽记、选中用一层填充，不再画竖条 */
+      '.cr-rooms{padding:0 8px 10px;gap:2px}',
+      '.cr-room{gap:8px;align-items:center;padding:6px 8px;border-radius:var(--cr-r);overflow:visible}',
+      '.cr-room:hover{background:var(--cr-fill-1)}',
+      '.cr-room.cr-active{background:var(--cr-fill-3)}',
+      '.cr-room.cr-active::before{content:none}',
+      '.cr-room-avatar{width:24px;height:24px;border:0;background:var(--cr-fill-2);color:var(--cr-body);font-size:11px;font-weight:500}',
+      '.cr-room-top{gap:6px}',
+      '.cr-room-name{font-size:13px;font-weight:500;color:var(--cr-fg)}',
+      '.cr-room-time{font-size:11px;color:var(--cr-caption)}',
+      '.cr-room-preview{margin-top:1px;font-size:11px;line-height:1.45;color:var(--cr-caption)}',
+
+      /* 房间头：15px 标题 + 12px 一句说明，右侧是 28px 的文字键 */
+      '.cr-room-head{padding:11px 16px;gap:8px;align-items:center;border-bottom:1px solid var(--cr-line)}',
+      '.cr-room-head-top{gap:8px;align-items:center;min-width:0}',
+      '.cr-room-title{font-size:15px;font-weight:500;letter-spacing:-.01em;color:var(--cr-fg)}',
+      '.cr-room-head-sub{margin-top:2px;font-size:12px;line-height:1.5;color:var(--cr-caption)}',
+
+      /* 消息：32px 徽记、13px 署名、14px 正文；自己那边是一块 14px 圆角的填充 */
+      '.cr-flow{padding:18px 16px 6px;gap:22px}',
+      '.cr-day{gap:10px;font-size:11px;color:var(--cr-caption)}',
+      '.cr-msg{gap:10px}',
+      '.cr-msg.cr-cont{margin-top:-10px}',
+      '.cr-avatar{width:32px;height:32px;border:0;background:var(--cr-fill-2);color:var(--cr-body);font-size:11px;font-weight:500}',
+      '.cr-msg-meta{gap:6px}',
+      '.cr-msg-name{font-size:13px;font-weight:500;color:var(--cr-fg)}',
+      '.cr-msg-time{font-size:11px;color:var(--cr-caption)}',
+      '.cr-msg-text{font-size:14px;line-height:1.7;color:var(--cr-body);max-width:min(620px,100%)}',
+      '.cr-msg.cr-mine .cr-msg-text{background:var(--cr-fill-3);border:0;border-radius:var(--cr-r-xl);padding:8px 12px;color:var(--cr-fg)}',
+      '.cr-msg.cr-mine .cr-avatar{background:var(--cr-fill-3);color:var(--cr-fg)}',
+      '.cr-mention{color:var(--cr-fg);font-weight:500;text-decoration:underline;text-decoration-color:var(--cr-line-strong);text-underline-offset:3px}',
+      '.cr-thinking{padding-left:42px;font-size:12px;color:var(--cr-caption);gap:6px}',
+      '.cr-hint{margin-left:42px;border-left-color:var(--cr-line);font-size:12px;color:var(--cr-caption)}',
+      '.cr-dot{width:6px;height:6px;opacity:.75;animation:cr-pulse 1.4s ease-in-out infinite}',
+      '.cr-dot:nth-child(2),.cr-dot:nth-child(3){display:none}',
+      '@keyframes cr-pulse{0%,100%{opacity:.35}50%{opacity:.95}}',
+
+      /* 输入器：一整块 14px 圆角的壳体，里面 32px 的键 */
+      '.cr-composer{padding:10px 16px 14px;gap:8px}',
+      '.cr-composer-identity{font-size:11px;color:var(--cr-caption)}',
+      '.cr-composer-identity b{font-size:12px;font-weight:500;color:var(--cr-body)}',
+      '.cr-input-shell{padding:6px 6px 6px 12px;border:1px solid transparent;border-radius:var(--cr-r-xl);background:var(--cr-fill-1)}',
+      '.cr-input-shell:focus-within{border-color:var(--cr-line-strong);background:var(--cr-fill-1)}',
+      '.cr-textarea{font-size:14px;line-height:1.6}',
+      '.cr-mention-btn{width:28px;height:28px;border-radius:var(--cr-r)}',
+      '.cr-send{height:32px;min-width:32px;padding:0 12px;border-radius:var(--cr-r);background:var(--cr-accent);color:var(--cr-on-accent);font-size:12px;font-weight:500;transition:transform .1s cubic-bezier(.23,1,.32,1),background-color .15s ease-out}',
+      '.cr-send:hover{filter:none;background:color-mix(in srgb,var(--cr-accent) 86%,var(--cr-fg))}',
+      '.cr-send:active{transform:scale(.97)}',
+      '.cr-composer-foot{font-size:11px;color:var(--cr-caption);min-height:18px}',
+
+      /* 成员列：24px 徽记 + 13px 名字 + 11px 副标题，分组标题回到 11px 大写 */
+      '.cr-members{padding:0 8px 12px;gap:2px}',
+      '.cr-group-label{margin-top:0;padding:12px 8px 4px;border-top:0;font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--cr-caption)}',
+      '.cr-member{gap:8px;padding:6px 8px;border-radius:var(--cr-r)}',
+      '.cr-member:hover{background:var(--cr-fill-1)}',
+      '.cr-member .cr-avatar{width:24px;height:24px;border:0;background:var(--cr-fill-2);color:var(--cr-body);font-size:10px}',
+      '.cr-member-name{font-size:13px;color:var(--cr-fg)}',
+      '.cr-member-role{font-size:11px;color:var(--cr-caption)}',
+
+      /* 胶囊 / 徽标 / 分段控制：一律是填充，不再用描边堆盒子 */
+      '.cr-chip,.cr-agent-chip{height:22px;line-height:22px;padding:0 6px;border:0;border-radius:var(--cr-r-sm);background:var(--cr-fill-1);color:var(--cr-body);font-size:11px}',
+      '.cr-chip.cr-lan,.cr-lan{border:0;background:var(--cr-fill-1);color:var(--cr-body)}',
+      '.cr-badge{min-width:18px;height:18px;padding:0 5px;font-size:11px;font-weight:500;background:var(--cr-accent);color:var(--cr-on-accent)}',
+      '.cr-btn{height:28px;padding:0 10px;border-radius:var(--cr-r);font-size:12px}',
+      '.cr-btn.cr-ghost{height:28px;padding:0 8px}',
+      '.cr-auth{padding:10px 8px 12px;border-top:1px solid var(--cr-line);gap:8px}',
+      '.cr-auth-head{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--cr-caption)}',
+      '.cr-auth-seg{height:30px;padding:2px;gap:2px;border:0;border-radius:var(--cr-r);background:var(--cr-fill-1)}',
+      '.cr-auth-btn{height:26px;border:0;border-radius:var(--cr-r-sm);font-size:12px;color:var(--cr-muted)}',
+      '.cr-auth-btn.cr-on{background:var(--cr-fill-3);color:var(--cr-fg)}',
+
+      /* 浮窗：40px 胶囊（鲸 + 房间 + 最后一句 + 未读），展开是 14px 圆角卡片 */
+      '.cr-float-card{width:380px;border:1px solid var(--cr-line);border-radius:var(--cr-r-xl);background:var(--cr-surface)}',
+      '.cr-float-head{min-height:48px;padding:8px 8px 8px 12px;gap:8px}',
+      '.cr-float-mark{width:24px;height:24px;border-radius:var(--cr-r-sm);background:var(--cr-fill-2);color:var(--cr-fg)}',
+      '.cr-float-pill{height:40px;max-width:304px;padding:0 10px 0 6px;gap:8px;border-radius:999px;background:var(--cr-surface);box-shadow:var(--cr-shadow-2);transition:transform .12s ease-out}',
+      '.cr-float-pill:hover{transform:translateY(-1px)}',
+      '.cr-float-pill:active{transform:translateY(0) scale(.985)}',
+      '.cr-float-pill .cr-float-mark{width:28px;height:28px;border-radius:999px}',
+      '.cr-float-pill-name{font-size:12px;font-weight:500}',
+      '.cr-float-pill-say{font-size:11px;color:var(--cr-caption)}',
+      '.cr-float-msg .cr-msg-text{font-size:13px;line-height:1.6}',
+      '.cr-float-msg .cr-avatar{width:24px;height:24px;font-size:10px}',
+      '.cr-float-thinking{padding-left:34px}',
+      '.cr-float-hint{margin-left:34px}',
+
+      /* 本机授权卡：外层一层框 + 内层两块，标题前一颗 6px 琥珀点 */
+      '.cr-approve{padding:4px;gap:4px;border-radius:var(--cr-r-xl);border-color:var(--cr-line);background:var(--cr-surface)}',
+      '.cr-approve-eyebrow{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--cr-caption)}',
+      '.cr-approve-detail{border-radius:var(--cr-r-lg);border-color:var(--cr-line);background:var(--cr-fill-1);padding:10px 12px}',
+      '.cr-approve-quote{border-left:2px solid var(--cr-line-strong);font-size:12px;line-height:1.6;color:var(--cr-caption)}',
+      '.cr-approve-foot{border-radius:var(--cr-r-lg);border-color:var(--cr-line);padding:4px}',
+      '.cr-toast{border-radius:var(--cr-r-xl);border-color:var(--cr-line);padding:10px 12px}',
+      '.cr-toast-name{font-size:11px;color:var(--cr-caption)}',

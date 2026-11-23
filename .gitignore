@@ -5,6 +5,10 @@ tools/preview/public/
 *.tgz
 .tmp-*
 
-# 本地设计对照与素材站原始源码（付费素材，不入公开仓库）
-design/
+# 方向探索时留下的对照截图（几 MB，不是源码）
+design/shots/
+# 素材站的预览缩略图（对方的市场图，不是我们的源码）
+design/mcp/previews/
+design/mcp/approve-dead.png
+# 素材站接口调试的原始包：里面有认证头、账号信息，绝不入仓
 .mcp-probe/
