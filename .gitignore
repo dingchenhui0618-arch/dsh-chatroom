@@ -4,3 +4,7 @@ tools/preview/public/
 .DS_Store
 *.tgz
 .tmp-*
+
+# 本地设计对照与素材站原始源码（付费素材，不入公开仓库）
+design/
+.mcp-probe/
