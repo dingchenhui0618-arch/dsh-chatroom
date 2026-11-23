@@ -18,24 +18,10 @@ import { createSpeaker } from './speak.js'
 import { createGate, LEVELS } from './guard.js'
 import { createLanBridge } from './lan-bridge.js'
 import { markApplied } from './code.js'
-import { isWhaleColor, freeWhale } from './palette.js'
+import { isWhaleColor } from './palette.js'
 import { pageMessages, project } from './project.js'
 
 export { project } from './project.js'
-
-/**
- * 一个新 agent 该是哪种颜色：挑过的照挑的存，没挑就从「这台机器还没人用的」里拿一个。
- *
- * 为什么不是「第几个 agent 就第几种」：每个人都是自己机器上的第一个 agent，
- * 按序号铺的话别人的 agent 和我的会是同一种颜色 —— 屋里看过去全是一个色。
- */
-function nextBotColor(state, wanted) {
-  if (isWhaleColor(wanted)) return wanted
-  const taken = new Set()
-  if (isWhaleColor(state.self?.color)) taken.add(state.self.color)
-  for (const bot of state.bots ?? []) if (isWhaleColor(bot.color)) taken.add(bot.color)
-  return freeWhale(taken)
-}
 
 export const name = 'dsh-chatroom'
 
@@ -93,7 +79,8 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
 
   switch (action) {
     case 'room.create': {
-      store.commit((draft) => createRoom(draft, { name: input.name, topic: input.topic }))
+      // 颜色是这间屋里的座位，建屋时就定下起房间的人自己挑的那一档。
+      store.commit((draft) => createRoom(draft, { name: input.name, topic: input.topic, color: input.color }))
       break
     }
     case 'room.update': {
@@ -132,11 +119,6 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
         id: `bot_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
         name: String(input.name ?? '').trim().slice(0, 60) || '新 agent',
         role: String(input.role ?? '').trim().slice(0, 200),
-        // 没挑就用「这台机器上还没人用的」那种：建三个 agent 都是同一个颜色，
-        // 这个选择就白做了。挑过的照挑的存。
-        color: nextBotColor(store.state, input.color),
-        // 是不是人自己点的：点过的不许在进屋时被换成别的（见 lan-host 的 roomColor）。
-        colorPicked: isWhaleColor(input.color),
         sessionId: randomUUID(),
         cwd: null,
         createdAt: new Date().toISOString(),
@@ -151,7 +133,16 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
         if (!room || room.remote) return
         addMember(draft, {
           roomId: room.id,
-          member: { id: `m_${bot.id}`, kind: 'bot', name: bot.name, role: bot.role, botId: bot.id, sessionId: bot.sessionId },
+          member: {
+            id: `m_${bot.id}`,
+            kind: 'bot',
+            name: bot.name,
+            role: bot.role,
+            // 颜色是这间屋里的座位：人挑过就用，没挑就让 addMember 找一档空的。
+            color: input.color,
+            botId: bot.id,
+            sessionId: bot.sessionId,
+          },
         })
       })
       if (lan && (state.links ?? []).length) await lan.announceAgents()
@@ -164,8 +155,6 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
           id: `bot_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
           name: String(input.name ?? '').trim().slice(0, 60) || '新 agent',
           role: String(input.role ?? '').trim().slice(0, 200),
-          color: nextBotColor(draft, input.color),
-          colorPicked: isWhaleColor(input.color),
           sessionId: randomUUID(),
           cwd: null,
           createdAt: new Date().toISOString(),
@@ -175,7 +164,16 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
         draft.bots.push(bot)
         addMember(draft, {
           roomId: input.roomId,
-          member: { id: `m_${bot.id}`, kind: 'bot', name: bot.name, role: bot.role, botId: bot.id, sessionId: bot.sessionId },
+          member: {
+            id: `m_${bot.id}`,
+            kind: 'bot',
+            name: bot.name,
+            role: bot.role,
+            // 人在这间屋里给它挑的那一档；没挑就是屋里空着的那一档。
+            color: input.color,
+            botId: bot.id,
+            sessionId: bot.sessionId,
+          },
         })
       })
       break
@@ -202,6 +200,7 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
             kind: 'human',
             name: input.name,
             role: input.role,
+            color: input.color,
             origin: input.origin,
             reach: input.origin?.kind === 'lan' ? 'lan' : 'here',
           },
@@ -299,7 +298,14 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
     }
     case 'lan.join': {
       if (!lan) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
-      await lan.join({ host: input.host, port: input.port, code: input.code, machine: input.machine })
+      // color 是加入表单里自己挑的那一档：宿主会拒绝「抢别人那一档」。
+      await lan.join({
+        host: input.host,
+        port: input.port,
+        code: input.code,
+        machine: input.machine,
+        color: input.color,
+      })
       break
     }
     case 'lan.leave': {
@@ -319,31 +325,36 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
         }
       })
       // 镜像房间里「我」这个名字在宿主那边：改完得告诉它，否则对面看到的还是旧名字。
-      // 这里只报名字：颜色只在他点过的时候才报，否则会把宿主定的「屋里不撞色」冲掉。
+      // 颜色不跟着走：颜色是每间屋里的一个座位，见下面的 self.color。
       if (lan && (state.links ?? []).length) await lan.rename(state.self.name)
       break
     }
     case 'self.color': {
       /**
-       * 换我这只虎鲸的颜色。
+       * 换我在这间屋里的那一档虎鲸。
        *
-       * 为什么单独一个动作、而不是塞进 self.rename：改名是「失焦就提交」的输入框，
-       * 点色块是另一个动作。混在一起，点一下颜色也会跑一次改名 —— 那么两个动作
-       * 都得等对方回一个包，点第二下就卡在第一次上。
+       * 颜色跟着房间走：同一个我在 A 屋可以是天蓝、在 B 屋是琥珀。
+       * 所以这个动作必须带 roomId（界面传当前屋子），改的也只是那间屋里的成员。
        *
-       * 颜色只在本机与自己的成员上生效，不随房间规则走：换屋子不该换颜色。
+       * 被同屋别人占着的颜色不能抢：宿主回 color_taken，界面把话说清楚让他换一档 ——
+       * 悄悄换成另一档的话，他挑的就不是他这个颜色了。
+       *
+       * 镜像房间（加入方的屋子）里，我这一档在宿主那边：转给 /lan/self，再用它回的
+       * 新投影把本地镜像刷一遍，两边不会各显示一个颜色。
        */
-      store.commit((draft) => {
-        if (!isWhaleColor(input.color)) throw Object.assign(new Error('颜色不在可选范围内'), { code: 'bad_color' })
-        draft.self.color = input.color
-        draft.self.colorPicked = true
-        for (const room of draft.rooms) {
-          if (room.remote) continue
-          const member = getMember(room, draft.self.id)
-          if (member) member.color = input.color
-        }
-      })
-      if (lan && (state.links ?? []).length) await lan.rename(state.self.name, state.self.color)
+      const roomId = String(input.roomId ?? state.activeRoomId ?? '')
+      const room = getRoom(state, roomId)
+      if (!room) throw Object.assign(new Error('找不到这间屋子。'), { code: 'room_not_found' })
+      if (!isWhaleColor(input.color)) throw Object.assign(new Error('颜色不在可选范围内'), { code: 'bad_color' })
+      if (room.remote) {
+        const link = lan?.linkByRoom?.(room.id)
+        if (!lan || !link) throw Object.assign(new Error('LAN 不可用'), { code: 'lan_unavailable' })
+        await lan.setColor(link.id, input.color)
+        break
+      }
+      store.commit((draft) =>
+        updateMember(draft, { roomId: room.id, memberId: draft.self.id, patch: { color: input.color } }),
+      )
       break
     }
     case 'bot.update': {
@@ -352,19 +363,13 @@ export async function dispatch({ store, speaker, gate = null, lan = null, comman
         if (!bot) throw Object.assign(new Error('bot_not_found'), { code: 'bot_not_found' })
         if (input.name !== undefined) bot.name = String(input.name).trim().slice(0, 60) || bot.name
         if (input.role !== undefined) bot.role = String(input.role).trim().slice(0, 200)
-        if (input.color !== undefined && isWhaleColor(input.color)) {
-          bot.color = input.color
-          bot.colorPicked = true
-        }
         for (const room of draft.rooms) {
           if (room.remote) continue
           const member = room.members.find((row) => row.botId === bot.id)
           if (member) {
             member.name = bot.name
             member.role = bot.role
-            // 只搬一个合法的色：bot 上没色时（旧存档、直接塞进 state 的种子数据）
-            // 把 undefined 搬进成员里，界面就会退回默认色 —— 一次改名把整屋颜色弄白。
-            if (isWhaleColor(bot.color)) member.color = bot.color
+            // 颜色不跟着 bot 走：颜色是每间屋里的座位，改它走 member.update。
           }
         }
       })

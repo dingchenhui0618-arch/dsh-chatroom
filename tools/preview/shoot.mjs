@@ -72,7 +72,16 @@ const shots = [
     waitFor: '.cr-msg',
     settle: 'read',
     open: '改',
-    caption: 'agent 的名字与职责随时可改：职责决定它怎么说话，所以建完之后还得能接着改',
+    caption: 'agent 的名字、职责与它在这间屋里的虎鲸颜色随时可改；颜色是这一间屋的座位',
+  },
+  {
+    name: 'new-room',
+    view: 'panel',
+    waitFor: '.cr-msg',
+    settle: 'read',
+    open: '+ 新建房间',
+    verify: 'new-room',
+    caption: '新建房间先挑一档虎鲸颜色：没挑之前「创建」是灰的 —— 每间屋的座位要自己选',
   },
   {
     name: 'invite',
@@ -417,6 +426,20 @@ async function attemptFailingJoin(cdp, sessionId) {
     })()`,
   )
   if (!filled) throw new Error('填不进加入表单')
+  // 进屋要自己挑一档颜色：不挑的时候「加入」是灰的（这一步本身也是那条规则的证据）。
+  const colored = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const form = document.querySelector('.cr-join-form')
+      const dot = form && form.querySelector('.cr-sw-dot')
+      if (!dot) return false
+      dot.click()
+      return true
+    })()`,
+  )
+  if (!colored) throw new Error('加入表单里挑不到虎鲸颜色')
+  await sleep(120)
   const submitted = await evaluate(
     cdp,
     sessionId,
@@ -1069,6 +1092,30 @@ try {
       console.log('verified — 删 agent / 解散屋子都要先问一句：点一次不生效，取消后原样')
     }
 
+    // 新建房间要自己挑颜色：八档、没挑时「创建」是灰的、而且说清为什么。
+    if (wants(shot, 'new-room')) {
+      const state = await evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const form = document.querySelector('.cr-create-form')
+          const text = (node) => (node ? String(node.textContent).trim() : '')
+          const create = form && form.querySelector('button.cr-primary')
+          return {
+            form: Boolean(form),
+            swatches: form ? form.querySelectorAll('.cr-sw-dot').length : 0,
+            hint: text(form && form.querySelector('.cr-hint')),
+            disabled: create ? create.disabled : null,
+          }
+        })()`,
+      )
+      if (!state.form) throw new Error('点开「+ 新建房间」之后没有表单')
+      if (state.swatches !== 8) throw new Error(`建屋表单里的虎鲸颜色不是八档：${state.swatches}`)
+      if (!state.disabled) throw new Error('没挑颜色时「创建」居然能按')
+      if (!/选一档/.test(state.hint)) throw new Error(`没挑颜色时没有说清为什么要挑：${JSON.stringify(state.hint)}`)
+      console.log('verified — 新建房间：八档颜色，没挑之前「创建」是灰的，并写明要先挑')
+    }
+
     // 加入失败：这是第二台机器的人最可能撞上的状态（地址写错、那台没开、码不对）。
     // 界面必须说人话、把填过的内容留着，而且不能在列表里留下半间屋子让人以为进去了。
     if (wants(shot, 'join-error')) {
@@ -1084,10 +1131,15 @@ try {
             joinButton: [...document.querySelectorAll('button.cr-primary')].some(
               (node) => node.textContent.trim() === '加入',
             ),
+            // 颜色是进屋前自己挑的：表单里八档、恰好一档选中。
+            swatches: document.querySelectorAll('.cr-join-form .cr-sw-dot').length,
+            picked: document.querySelectorAll('.cr-join-form .cr-sw-dot[aria-pressed="true"]').length,
           }
         })()`,
       )
       if (!/连不上/.test(state.error)) throw new Error(`报错没说清是连不上：${JSON.stringify(state.error)}`)
+      if (state.swatches !== 8) throw new Error(`加入表单里的虎鲸颜色不是八档：${state.swatches}`)
+      if (state.picked !== 1) throw new Error(`加入表单里没有恰好选中一档颜色：${state.picked}`)
       if (!state.error.includes(joinFailTarget)) {
         throw new Error(`报错里没有对方地址（${joinFailTarget}），用户不知道该改哪：${JSON.stringify(state.error)}`)
       }
@@ -1385,12 +1437,23 @@ try {
             chip: text(row.querySelector('.cr-msg-meta .cr-chip.cr-lan')),
           }))
           const members = [...document.querySelectorAll('.cr-member-name')].map(text)
-          return { rows, members }
+          // 每人一只虎鲸：成员列上每一行的头像色，就是这间屋里他坐的那一档。
+          const colors = [...document.querySelectorAll('.cr-member')].map((row) => {
+            const avatar = row.querySelector('.cr-avatar')
+            return avatar ? getComputedStyle(avatar).color : null
+          })
+          return { rows, members, colors }
         })()`,
       )
       const wantMembers = ['林岸', '账期 agent', '退货 agent', '周荻', '尾货 agent', '陈默', '库存 agent']
       const missing = wantMembers.filter((name) => !state.members.includes(name))
       if (missing.length) throw new Error(`成员列少了：${missing.join('、')}（实际 ${state.members.join('、')}）`)
+      const palette = new Set(state.colors.filter(Boolean))
+      if (palette.size !== wantMembers.length) {
+        throw new Error(
+          `同一间屋里 ${wantMembers.length} 个成员应该有 ${wantMembers.length} 种虎鲸色，实际 ${palette.size} 种：${JSON.stringify(state.colors)}`,
+        )
+      }
 
       const byMachine = {
         '周荻的 MacBook': ['周荻', '尾货 agent'],

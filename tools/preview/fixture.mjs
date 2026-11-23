@@ -122,7 +122,7 @@ function seedHost(store) {
     })
     // 房间码是随机生成的，界面上会显示（邀请那屏就有）——钉死，截图才可复现。
     room.code = 'K7M2QD'
-    const other = createRoom(draft, { name: '选品会', topic: '下周上新的三个款' })
+    const other = createRoom(draft, { name: '选品会', topic: '下周上新的三个款', color: 'amber' })
     other.code = 'X4RT9B'
     draft.activeRoomId = room.id
 
@@ -245,7 +245,7 @@ export async function bootFixture({ port, empty = false } = {}) {
     async failOnce() {
       const created = await side.command({
         action: 'room.create',
-        input: { name: '对账会', topic: '把缺口口径对一遍' },
+        input: { name: '对账会', topic: '把缺口口径对一遍', color: 'coral' },
       })
       const target = created.rooms.find((row) => row.name === '对账会')
       if (!target) throw new Error('没能开出「对账会」这间屋子')
@@ -282,7 +282,7 @@ export async function bootFixture({ port, empty = false } = {}) {
       if (stale) await side.command({ action: 'room.dissolve', input: { roomId: stale.id } })
       const created = await side.command({
         action: 'room.create',
-        input: { name: '尾款对账', topic: '把 11/03 挪款之后的缺口口径定下来' },
+        input: { name: '尾款对账', topic: '把 11/03 挪款之后的缺口口径定下来', color: 'moss' },
       })
       const target = created.rooms.find((row) => row.name === '尾款对账')
       if (!target) throw new Error('没能开出「尾款对账」这间屋子')
@@ -320,7 +320,7 @@ export async function bootFixture({ port, empty = false } = {}) {
       }
       const created = await side.command({
         action: 'room.create',
-        input: { name: name, topic: topic },
+        input: { name: name, topic: topic, color: 'teal' },
       })
       const target = created.rooms.find((row) => row.name === name)
       if (!target) throw new Error(`没能开出「${name}」这间屋子`)
@@ -357,7 +357,7 @@ export async function bootFixture({ port, empty = false } = {}) {
     async bringAgent() {
       const created = await side.command({
         action: 'room.create',
-        input: { name: '带人进屋', topic: '新机器上还没有 agent，先在这间屋里建一个' },
+        input: { name: '带人进屋', topic: '新机器上还没有 agent，先在这间屋里建一个', color: 'sky' },
       })
       const target = created.rooms.find((row) => row.name === '带人进屋')
       if (!target) throw new Error('没能开出「带人进屋」这间屋子')
@@ -421,7 +421,7 @@ export async function bootFixture({ port, empty = false } = {}) {
     async oldPeer() {
       const created = await side.command({
         action: 'room.create',
-        input: { name: '半新半旧', topic: '两台机器的插件版本不一样，agent 带不过来' },
+        input: { name: '半新半旧', topic: '两台机器的插件版本不一样，agent 带不过来', color: 'amber' },
       })
       const target = created.rooms.find((row) => row.name === '半新半旧')
       if (!target) throw new Error('没能开出「半新半旧」这间屋子')
@@ -478,6 +478,8 @@ export async function bootGuest({
   machine = '周荻的 MacBook',
   role = '拆尾货与退货结构',
   reply = '尾货占退货的 62%，三款夏装清仓能把 Q4 退货成本压回 15 万以内。',
+  // 加入表单里自己挑的那一档（宿主会拒绝抢别人已经坐着的颜色）。
+  color = 'teal',
   // 新装的机器上一个 agent 都没有：那条路（先挤进屋、再建 agent）也要能演出来。
   withAgent = true,
 }) {
@@ -488,7 +490,8 @@ export async function bootGuest({
   await side.command({ action: 'auth.set', input: { level: 'full' } })
   await side.command({ action: 'self.rename', input: { name } })
   if (withAgent) {
-    const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子' } })
+    // 自己那间屋子也挑一档：颜色跟着房间走，这间屋的座位和宿主那间是两回事。
+    const local = await side.command({ action: 'room.create', input: { name: '我自己的屋子', color: 'amber' } })
     // 同宿主那边：房间码也钉死，加入方视角的截图才不会每次都不一样。
     side.store.commit((draft) => {
       const own = draft.rooms.find((row) => row.id === local.rooms[0].id)
@@ -501,7 +504,7 @@ export async function bootGuest({
   }
   await side.command({
     action: 'lan.join',
-    input: { host, port, code, machine },
+    input: { host, port, code, machine, color },
   })
   return { ...side, dir }
 }
@@ -568,7 +571,7 @@ export async function requestApproval(host, guest) {
  */
 export async function joinThirdMachine(
   host,
-  { name = '陈默', botName = '库存 agent', machine = '陈默的 ThinkPad', role = '盯尾货库存与清仓节奏' } = {},
+  { name = '陈默', botName = '库存 agent', machine = '陈默的 ThinkPad', role = '盯尾货库存与清仓节奏', color = 'coral' } = {},
 ) {
   const third = await bootGuest({
     port: host.lanPort,
@@ -577,6 +580,7 @@ export async function joinThirdMachine(
     botName,
     machine,
     role,
+    color,
     reply: '1.2 万件里 7 千件能在 11/11 前清掉，剩下的转明年春季，退货成本压回 15 万。',
   })
   const mirror = third.snapshot().rooms.find((room) => room.remote)

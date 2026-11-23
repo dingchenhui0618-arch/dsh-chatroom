@@ -66,9 +66,10 @@ export function createLanBridge({ store, runner, gate = null, log = () => {}, ma
     read: (args) => guest.read(args),
     // 往回翻历史：镜像房间更早的消息在宿主那台机器上，只能连着 LAN 要。
     page: (args) => guest.page(args),
-    // 改名顺手带色：颜色只在人点过的时候才传（见 plugin.js 的 self.color），
-    // 所以这里不能把第二个参数丢掉 —— 丢了就变成「换了颜色对面不知道」。
-    rename: (name, color) => guest.rename(name, color),
+    // 改名只报名字：颜色是每间屋里的座位，改它走下面的 setColor。
+    rename: (name) => guest.rename(name),
+    // 换「我在这间屋里」的虎鲸座位：宿主会拒掉被别人占着的那一档。
+    setColor: (linkId, color) => guest.setColor(linkId, color),
     // 「加入之后才建 agent」这条路：本机名单变了就报给宿主，让屋里立刻有人。
     announceAgents: () => guest.announceAgents(),
     linkByRoom: (roomId) => guest.linkByRoom(roomId),

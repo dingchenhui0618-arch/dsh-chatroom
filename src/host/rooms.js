@@ -1,5 +1,5 @@
 import { newId, newRoomCode } from './state.js'
-import { isWhaleColor, whaleFor } from './palette.js'
+import { claimColor, isWhaleColor } from './palette.js'
 
 /**
  * 房间状态机：纯函数，全部直接改传进来的 state。
@@ -52,7 +52,13 @@ function requireRoom(state, roomId) {
 
 export const getMember = (room, memberId) => room.members.find((member) => member.id === memberId) ?? null
 
-export function createRoom(state, { name, topic, selfName } = {}) {
+/**
+ * 开一间屋子。color 是起房间的人自己挑的那一档虎鲸。
+ *
+ * 为什么颜色从建屋这一步就要定：这间屋里还不存在「我以前是什么颜色」，
+ * 没有可继承的东西。调用方没给（脚本、旧客户端）就铺第一档，不让建屋失败。
+ */
+export function createRoom(state, { name, topic, selfName, color } = {}) {
   const label = clean(name, LIMITS.name)
   if (!label) fail('room_name_required')
   const taken = new Set(state.rooms.map((room) => room.code))
@@ -75,7 +81,7 @@ export function createRoom(state, { name, topic, selfName } = {}) {
     kind: 'human',
     name: clean(selfName ?? state.self.name, LIMITS.name) || '我',
     role: '',
-    color: isWhaleColor(state.self.color) ? state.self.color : whaleFor(0),
+    color: claimColor(room, { wanted: color }),
     botId: null,
     sessionId: null,
     owner: 'local',
@@ -132,14 +138,9 @@ export function addMember(state, { roomId, member } = {}) {
   if (room.members.length >= LIMITS.members) fail('room_full')
   if (room.members.some((row) => row.id === member.id)) return getMember(room, member.id)
   const origin = normalizeOrigin(member.origin)
-  // 颜色跟着身份走：agent 成员用 agent 自己的色，人用调用方给的那个，
-  // 都没有（旧存档、别人那台的老版本）就按屋里第几个铺一种，不让人人都是同一个色。
-  const ownerBot = member.botId ? state.bots?.find((row) => row.id === member.botId) : null
-  const color = isWhaleColor(member.color)
-    ? member.color
-    : isWhaleColor(ownerBot?.color)
-      ? ownerBot.color
-      : whaleFor(room.members.length)
+  // 颜色是这间屋里的一个座位：调用方给了就用它（agent 可能是人挑的），
+  // 没给（旧存档、别人那台的老版本）就找一档屋里还没人坐的。
+  const color = claimColor(room, { wanted: member.color })
   const row = {
     id: member.id,
     kind: member.kind === 'bot' ? 'bot' : 'human',
@@ -278,15 +279,25 @@ export function updateMember(state, { roomId, memberId, patch = {} } = {}) {
   const room = requireRoom(state, roomId)
   const member = getMember(room, memberId)
   if (!member) fail('member_not_found')
+  // 先验颜色再动别的字段：这一档被别人占了就直接报错，
+  // 不能名字已经改掉、颜色才失败 —— 那样界面上看着「改了一半」。
+  // 颜色只认表里那几档：别的值一律忽略（不是报错）—— 那是界面的一个点了没用的点击，
+  // 不值得让整次更新失败。但**合法却被同屋别人占着**要说清楚：他挑的是这一档，
+  // 不能替他换成另一档（strict）。
+  if (patch.color !== undefined && isWhaleColor(patch.color)) {
+    member.color = claimColor(room, {
+      wanted: patch.color,
+      current: member.color,
+      exceptId: member.id,
+      strict: true,
+    })
+  }
   if (patch.name !== undefined) {
     const label = clean(patch.name, LIMITS.name)
     if (!label) fail('member_name_required')
     member.name = label
   }
   if (patch.role !== undefined) member.role = clean(patch.role, LIMITS.role)
-  // 颜色只认表里那几档：别的值一律忽略（不是报错）—— 那是界面的一个点了没用的点击，
-  // 不值得让整次更新失败。
-  if (patch.color !== undefined && isWhaleColor(patch.color)) member.color = patch.color
   if (patch.reach !== undefined && typeof patch.reach === 'string') member.reach = patch.reach.slice(0, 32)
   if (patch.origin !== undefined) member.origin = normalizeOrigin(patch.origin)
   return member
@@ -311,7 +322,7 @@ export function postMessage(state, { roomId, authorId, text, mentions, replyTo, 
     // 自愈：房间从旧版本带过来的、没有 self 成员的情况。
     author = addMember(state, {
       roomId,
-      member: { id: state.self.id, kind: 'human', name: state.self.name, color: state.self.color, origin: { kind: 'local' } },
+      member: { id: state.self.id, kind: 'human', name: state.self.name, origin: { kind: 'local' } },
     })
   }
   if (!author) fail('author_not_in_room')

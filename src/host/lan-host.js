@@ -15,7 +15,7 @@ import {
 } from './rooms.js'
 import { ASSIGN_TIMEOUT, MAX_BODY, PEER_IDLE, WAIT_MS, fail, lanAddresses } from './lan.js'
 import { pageMessages, project } from './project.js'
-import { freeWhale, isWhaleColor } from './palette.js'
+import { claimColor, isWhaleColor } from './palette.js'
 import { code, codeStatus } from './code.js'
 
 /**
@@ -270,10 +270,6 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         key: (textOf(agent?.id) ?? '').trim().slice(0, 64),
         name: (textOf(agent?.name) ?? '').trim().slice(0, 60),
         role: (textOf(agent?.role) ?? '').trim().slice(0, 200),
-        // 对面自己挑的虎鲸颜色：认不出就 null（对面对旧版本/手改过的包）。
-        // picked 说明这一档是人点的 —— 点过的照他来，没点过的由宿主按屋里的空档定。
-        color: isWhaleColor(agent?.color) ? agent.color : null,
-        picked: agent?.colorPicked === true,
       }))
       .filter((agent) => agent.key)
     const seen = new Set(declared.map((agent) => agent.key))
@@ -285,6 +281,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         (member) => member.owner === peer.id && member.kind === 'bot' && member.botId === agent.key,
       )
       if (existing) {
+        // 颜色是这间屋里的座位：agent 不随身带颜色，屋里空着哪一档就用哪一档；
+        // 已经有座位的那只保持原样，别每次重连换一次颜色。
         if (agent.name && existing.name !== agent.name) {
           existing.name = agent.name
           updated += 1
@@ -293,13 +291,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           existing.role = agent.role
           updated += 1
         }
-        // 颜色改了同名字一样，要跟着对面变：他把自己那只改成珊瑚色，这边的成员列
-        // 还留着旧颜色，两边就各认各的。没点过的则由宿主保证「屋里不撞色」。
-        const nextColor = roomColor(draft, room.id, {
-          wanted: agent.picked ? agent.color : null,
-          current: existing.color ?? null,
-          exceptId: existing.id,
-        })
+        const nextColor = claimColor(room, { current: existing.color ?? null, exceptId: existing.id })
         if (nextColor && existing.color !== nextColor) {
           existing.color = nextColor
           updated += 1
@@ -317,7 +309,6 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
           kind: 'bot',
           name: agent.name || 'agent',
           role: agent.role,
-          color: roomColor(draft, room.id, { wanted: agent.picked ? agent.color : null }),
           botId: agent.key,
           sessionId: null,
           origin,
@@ -387,28 +378,6 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     }
   }
 
-  /**
-   * 进屋时定一个颜色。
-   *
-   * 规则只有一条：**自己点过的照点过的来；没点过的，屋里没人用就给他，撞了就换一个
-   * 还没人用的。** 为什么要宿主来定：颜色是给同屋其他人认「这条是谁说的」用的，
-   * 而两台新装的机器默认都是霜白 —— 不改的话七个人里五个白，这个功能就等于没有。
-   *
-   * 只影响这一间屋子：他那台机器上存的那一档不动，下次进来、回自己的屋子还是他自己选的。
-   */
-  function roomColor(draft, roomId, { wanted = null, current = null, exceptId = null } = {}) {
-    const room = getRoom(draft, roomId)
-    const taken = new Set()
-    for (const member of room?.members ?? []) {
-      if (member.id === exceptId) continue
-      if (isWhaleColor(member.color)) taken.add(member.color)
-    }
-    if (isWhaleColor(wanted) && !taken.has(wanted)) return wanted
-    // 已经有了、别人也没在用：别因为「没人点过」就每次重连都换一次颜色。
-    if (isWhaleColor(current) && !taken.has(current)) return current
-    return freeWhale(taken)
-  }
-
   function joinRoom({ code, machine: guestMachine, self, agents, build, instance: rawInstance }, address) {
     if (typeof code !== 'string') fail('code_required', '房间码不能为空。')
     const wanted = code.trim().toUpperCase()
@@ -473,11 +442,25 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
     // 成员列和 @ 都会认错人。
     const declaredName = (textOf(self?.name) ?? '').trim().slice(0, 60)
     const humanName = !declaredName || declaredName === store.state.self.name ? label : declaredName
-    // 他挑的那只虎鲸的颜色。旧版加入方不带这个字段 —— 那就按屋里还没人用的铺一种，
-    // 不是「没有颜色」：界面上少一个色块比多一个空白难解释。
-    const declaredColor = isWhaleColor(self?.color) ? self.color : null
-    // 点过的才算「他要这个颜色」；默认色进屋时允许被换成屋里空着的那一档。
-    const colorPicked = self?.colorPicked === true
+    // 他挑的那一档。旧版加入方不带这个字段 —— 那就给一档屋里空着的，不是「没有颜色」。
+    // colorPicked 只在对面**加入表单里真选了颜色**时为 true：点过的那一档被同屋别人占着
+    // 就报 color_taken；没点过（自动重连报「上次坐的那一档」）则能留就留、被占就换一档空的。
+    const wantedColor = isWhaleColor(self?.color) ? self.color : null
+    const existingHuman =
+      room.members.find((member) => member.kind === 'human' && instance && member.seat === instance) ??
+      room.members.find(
+        (member) => member.kind === 'human' && adopted.some((other) => other.id === member.owner),
+      ) ??
+      null
+    // 颜色在 commit 之前定好：被同屋别人占了要报 color_taken，而 commit 里抛异常时
+    // 前面改过的 owner / 名字已经写进 state 了（revision 不涨，字段却变了），
+    // 会留下一半接管。先算，再写。
+    const claimedColor = claimColor(room, {
+      wanted: wantedColor,
+      current: existingHuman?.color ?? null,
+      exceptId: existingHuman?.id ?? null,
+      strict: self?.colorPicked === true && Boolean(wantedColor),
+    })
 
     store.commit((draft) => {
       if (adopted.length) {
@@ -514,7 +497,7 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
             kind: 'human',
             name: humanName,
             role: '',
-            color: roomColor(draft, room.id, { wanted: colorPicked ? declaredColor : null }),
+            color: claimedColor,
             origin,
             owner: peerId,
             reach: 'lan',
@@ -525,14 +508,8 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
       human.owner = peerId
       human.seat = instance || human.seat || null
       if (human.name !== humanName) human.name = humanName
-      // 接了座位回来的人也可能刚换过颜色：名字与颜色都以这一次上报为准。
-      // 没点过的颜色交给宿主按屋里的空档定 —— 但也别把已经定好的那个换来换去。
-      const nextHumanColor = roomColor(draft, room.id, {
-        wanted: colorPicked ? declaredColor : null,
-        current: human.color ?? null,
-        exceptId: human.id,
-      })
-      if (nextHumanColor && human.color !== nextHumanColor) human.color = nextHumanColor
+      // 颜色同样以这一次上报为准：接回座位的这个人可能在加入表单里换了一档。
+      if (human.color !== claimedColor) human.color = claimedColor
       peer.selfMemberId = human.id
       // 加入那一刻报上来的 agent 名单走同一套对账，和「加入之后补报」共用一条路。
       reconcileAgents(draft, peer, agents, origin, seat)
@@ -848,16 +825,31 @@ export function createLanHost({ store, onHumanMessage = () => {}, log = logDefau
         // 只换色、不改名也是合法的一次上报（点色块时就这样发）；两样都没有才是坏包。
         if (name === null && !color) fail('bad_text', '名字只能是字符串。')
         const trimmed = (name ?? '').trim().slice(0, 60)
-        if (trimmed || color) {
+        // 颜色是这间屋里的座位：被同屋别人占着就回 color_taken，让他自己换一档。
+        // 跟加入时一样，先算再写：commit 里抛异常会留下「名字改了、颜色没改」的半截。
+        const roomNow = getRoom(store.state, peer.roomId)
+        if (!roomNow) fail('room_not_found', '这间屋子已经不在了。')
+        const memberNow = getMember(roomNow, peer.selfMemberId)
+        const nextColor = color
+          ? claimColor(roomNow, {
+              wanted: color,
+              current: memberNow?.color ?? null,
+              exceptId: memberNow?.id ?? null,
+              strict: true,
+            })
+          : null
+        if (trimmed || nextColor) {
           store.commit((draft) => {
             const room = getRoom(draft, peer.roomId)
             const member = room ? getMember(room, peer.selfMemberId) : null
             if (!member) return
             if (trimmed) member.name = trimmed
-            if (color) member.color = color
+            if (nextColor) member.color = nextColor
           })
         }
-        value = { renamed: Boolean(trimmed), colored: Boolean(color) }
+        // 带上新投影：加入方点一下色块要立刻看到自己换了色，不能等下一轮长轮询回来
+        // （那期间两边各显示一个颜色，比点不动更像坏了）。
+        value = { renamed: Boolean(trimmed), colored: Boolean(nextColor), snapshot: viewFor(peer) }
       } else if (path === '/lan/agents' && request.method === 'POST') {
         /**
          * 那台机器补报名单：它刚建了一个 agent，或者改了名字/职责、删掉了一个。

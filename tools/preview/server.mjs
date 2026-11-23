@@ -39,7 +39,7 @@ try {
   console.warn(`[chatroom-preview] 固定端口 ${wantedLanPort} 起不来，改用系统挑的端口：${error?.message ?? error}`)
   host = await bootFixture({ port: 0, empty: emptyMode })
 }
-const guest = emptyMode ? null : await bootGuest({ port: host.lanPort, code: host.code })
+const guest = emptyMode ? null : await bootGuest({ port: host.lanPort, code: host.code, color: 'teal' })
 if (guest) await warmUp(host, guest)
 // 第三台机器按需加入：前七张截图拍的是「两台机器」的样子，多一台会改掉它们的内容。
 let third = null

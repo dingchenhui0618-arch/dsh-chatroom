@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { BUILD, baseUrl, fail, getJson, parseTarget, postJson } from './lan.js'
+import { isWhaleColor } from './palette.js'
 import { project } from './project.js'
 
 /**
@@ -12,6 +13,19 @@ import { project } from './project.js'
  *     我用自己机器上的原生 session 跑完再回传（记忆长在我这台机器上，这才是「带着自己的 agent」）；
  *   - 镜像写进同一个 state 与同一个投影，所以客户端的界面代码一行都不用分叉。
  */
+
+/**
+ * 宿主回的投影里「我」在这间屋里坐的那一档。
+ *
+ * 加入/改名的返回值都带 snapshot（宿主那边刚 commit 过），颜色以它为准：
+ * 我们报的那一档可能被宿主按空档改过，信自己报的值会和对面显示成两种颜色。
+ */
+function hostSelfColor(value) {
+  const rooms = value?.snapshot?.rooms ?? []
+  const room = rooms.find((row) => row.id === value?.roomId) ?? rooms[0]
+  const member = room?.members?.find((row) => row.id === value?.selfMemberId)
+  return isWhaleColor(member?.color) ? member.color : null
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -90,26 +104,23 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
   const linkByRoom = (roomId) => links().find((link) => link.localRoomId === roomId) ?? null
 
   /**
-   * 报给宿主看的「我是谁」「我带谁」。
+   * 报给宿主看的「我是谁」。
    *
-   * colorPicked 是这个包里唯一一个「解释性」字段：颜色本身两边都存着，宿主要知道
-   * 这一档是人点的还是默认的 —— 默认色进别人屋里时可以被换成一档没人用的（见
-   * lan-host 的 roomColor），点过的不许动。
+   * color 是**这间屋里我坐的那一档**，不是「我这个人的颜色」—— 颜色跟着房间走。
+   * colorPicked 只在加入表单里真的选了颜色时为 true：宿主据此拒绝「抢别人那一档」；
+   * 自动重连报的是上次坐的那一档，被占了由宿主换一档，不让重连整条断掉。
    */
-  const selfPayload = () => ({
+  const selfPayload = (color, picked) => ({
     id: store.state.self.id,
     name: store.state.self.name,
-    color: store.state.self.color,
-    colorPicked: store.state.self.colorPicked === true,
+    color: isWhaleColor(color) ? color : null,
+    colorPicked: picked === true,
   })
-  const agentsPayload = () =>
-    store.state.bots.map((bot) => ({
-      id: bot.id,
-      name: bot.name,
-      role: bot.role,
-      color: bot.color,
-      colorPicked: bot.colorPicked === true,
-    }))
+  /**
+   * 报给宿主看的「我带谁」。agent 包里不带颜色：颜色是宿主屋里的一项座位，
+   * 由宿主按空档安排。人给自己屋里的 agent 挑色走 member.update，不经过这里。
+   */
+  const agentsPayload = () => store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role }))
 
   function runtimeOf(linkId) {
     let runtime = runtimes.get(linkId)
@@ -249,6 +260,12 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
     const linkId = existing?.id ?? shortId('ln')
     const localRoomId = existing?.localRoomId ?? shortId('rm_lan')
     const machine = String(input.machine ?? '').trim().slice(0, 64) || hostname()
+    // 加入表单里选的那一档。没选（自动重连、旧界面）就沿用上次坐的那一档：
+    // 先看这条 link 记着的，再看本机镜像里「我」的颜色 —— 后者是宿主现在认的值。
+    const explicit = isWhaleColor(input.color) ? input.color : null
+    const mirror = existing ? store.state.rooms.find((room) => room.id === existing.localRoomId) : null
+    const held = mirror?.members?.find((member) => member.id === 'me')?.color
+    const color = explicit ?? (isWhaleColor(existing?.color) ? existing.color : isWhaleColor(held) ? held : null)
     const value = await postJson(
       `${baseUrl(host, port)}/lan/join`,
       {
@@ -258,10 +275,9 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
         // 桌面端重启、插件重载之后还是同一个值。宿主靠它认出「是同一个人回来了」，
         // 而不是把旧那组留着当另一个人（见 lan-host.js 的接管逻辑）。
         instance: linkId,
-        // 名字与虎鲸颜色一起报：对面成员列上「我是谁」靠这两样认，缺一样他的屋里
-        // 就会有个颜色对不上的人。colorPicked 说的是「这一档是不是我自己点的」——
-        // 没点过的默认色，宿主可以按他屋里还空着的那一档换掉。
-        self: selfPayload(),
+        // 名字与这间屋的虎鲸座位一起报：加入表单里选过色的，colorPicked=true，
+        // 宿主会拒绝「抢别人那一档」而不是替他换一档。
+        self: selfPayload(color, Boolean(explicit)),
         agents: agentsPayload(),
         build: BUILD,
       },
@@ -273,6 +289,9 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
       port,
       code,
       machine,
+      // 这一档记在 link 上：重连时不用再问界面，也不会把颜色弄丢。
+      // 以宿主回的投影为准（它可能按空档给了一档），拿不到才用刚才报的那个。
+      color: hostSelfColor(value) ?? color,
       peerId: value.peerId,
       hostMachine: value.hostMachine ?? null,
       roomId: value.roomId,
@@ -310,7 +329,9 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
             code: record.code,
             machine: record.machine,
             instance: record.id,
-            self: selfPayload(),
+            // 重连不是「重新挑颜色」：报上次坐的那一档，colorPicked=false ——
+            // 被占了由宿主按空档安排，不让整条连接因为一个颜色断掉。
+            self: selfPayload(record.color, false),
             agents: agentsPayload(),
             build: BUILD,
           },
@@ -320,6 +341,8 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
         store.commit((draft) => {
           const next = {
             ...record,
+            // 宿主可能重新安排了一档（原来那档被人占了）：以它的投影为准。
+            color: hostSelfColor(value) ?? record.color,
             peerId: value.peerId,
             selfMemberId: value.selfMemberId,
             status: 'online',
@@ -534,20 +557,45 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
     })
   }
 
-  async function rename(name, color) {
+  async function rename(name) {
     const label = String(name ?? '').trim().slice(0, 60)
     if (!label) return null
-    const body = { name: label }
-    // 颜色只在人点过的时候才带上：不带就是「名字变了，颜色别动」。
-    if (typeof color === 'string') body.color = color
     for (const record of links()) {
       await postJson(
         `${baseUrl(record.host, record.port)}/lan/self`,
-        { peerId: record.peerId, ...body },
+        { peerId: record.peerId, name: label },
         { timeoutMs: 8000 },
-      ).catch((error) => log('lan_rename_failed', error))
+      )
+        .then((value) => {
+          // 宿主把改名后的投影带回来了：顺手刷一遍镜像，别等下一轮长轮询。
+          if (value?.snapshot) applyRemote(record.id, value.snapshot)
+        })
+        .catch((error) => log('lan_rename_failed', error))
     }
     return { renamed: true }
+  }
+
+  /**
+   * 换我在这间屋里坐的那一档虎鲸。
+   *
+   * 颜色跟着房间走，所以只能改「这间屋里的我」：linkId 指明是哪间屋子的宿主。
+   * 被同屋别人占了的颜色，宿主会回 color_taken —— 这个错误**不能吞掉**，
+   * 要原样抛给界面，让人自己换一档（悄悄换掉的话，他挑的就不是这个颜色了）。
+   * 成功时宿主把新投影带回来，镜像当场换成这一档。
+   */
+  async function setColor(linkId, color) {
+    if (!isWhaleColor(color)) fail('bad_color', '颜色不在可选范围内。')
+    const record = linkById(linkId)
+    if (!record) fail('link_not_found', '这条局域网连接已经不在了。')
+    const value = await withPeer(record, (peer) =>
+      postJson(
+        `${baseUrl(peer.host, peer.port)}/lan/self`,
+        { peerId: peer.peerId, color },
+        { timeoutMs: 8000 },
+      ),
+    )
+    if (value?.snapshot) applyRemote(record.id, value.snapshot)
+    return value
   }
 
   /**
@@ -636,5 +684,5 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
     }
   }
 
-  return { join, leave, send, read, page, rename, resume, stop, snapshotView, linkByRoom, links, announceAgents }
+  return { join, leave, send, read, page, rename, setColor, resume, stop, snapshotView, linkByRoom, links, announceAgents }
 }

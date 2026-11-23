@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { DEFAULT_WHALE, freeWhale, isWhaleColor } from './palette.js'
+import { freeWhale, isWhaleColor } from './palette.js'
 
 /**
  * 持久化状态。
@@ -23,7 +23,8 @@ export function emptyState() {
     schema: SCHEMA,
     revision: 0,
     createdAt: new Date().toISOString(),
-    self: { id: 'me', name: '我', color: DEFAULT_WHALE, colorPicked: false },
+    // 人本身不带颜色：虎鲸的色是「在这间屋里坐哪一档」，存在 room.members 上。
+    self: { id: 'me', name: '我' },
     // 本机授权：另一台机器派过来的回合要不要执行。三档见 guard.js。
     // 默认只读 —— 新装的机器不替别人的话动本机的工具权限。
     auth: { level: 'readonly' },
@@ -54,32 +55,25 @@ export function validateState(value) {
     value.auth = { level: 'readonly' }
   }
   if (!['readonly', 'ask', 'full'].includes(value.auth.level)) value.auth.level = 'readonly'
-  // 虎鲸颜色也是后加的：老 state.json 里没有它。这里一次补齐三处 ——
-  // self、bots、以及屋里的成员。成员的色按「它属于谁」接回去（agent 跟 agent 走，
-  // 本机的人跟 self 走），认不出来的才按屋里第几个铺一种，一屋子人不会全是同一个色。
-  if (!isWhaleColor(value.self.color)) value.self.color = DEFAULT_WHALE
-  // colorPicked = 「这一档是人自己点的」。没点过的默认色进屋时可以被宿主换成
-  // 屋里还没人用的那一档（见 lan-host 的 roomColor）；点过的就照他点的来。
-  value.self.colorPicked = value.self.colorPicked === true
-  // agent 的颜色也按「本机已经用掉哪些」铺：第一个 agent 不会和人撞成同一个色。
-  const mine = new Set([value.self.color])
-  value.bots.forEach((bot) => {
-    if (!bot) return
-    if (!isWhaleColor(bot.color)) bot.color = freeWhale(mine)
-    bot.colorPicked = bot.colorPicked === true
-    mine.add(bot.color)
-  })
+  // 虎鲸颜色是后加的，而且一开始是「身份」：存在 self 与 bots 上，再映到屋里。
+  // 现在它改成「每间屋里的一个座位」：真源只有 room.members[].color。
+  // 这两处旧字段留着只会变成第二个真相（改了一处另一处不动），所以读进来就抹掉。
+  delete value.self.color
+  delete value.self.colorPicked
+  for (const bot of value.bots) {
+    if (!bot) continue
+    delete bot.color
+    delete bot.colorPicked
+  }
   for (const room of value.rooms) {
     if (!room || !Array.isArray(room.members)) continue
     const used = new Set()
     for (const member of room.members) {
       if (!member) continue
-      const bot = member.botId ? value.bots.find((row) => row.id === member.botId) : null
-      if (!isWhaleColor(member.color)) {
-        if (bot) member.color = bot.color
-        else if (member.kind === 'human' && member.id === value.self.id) member.color = value.self.color
-        else member.color = freeWhale(used)
-      }
+      // 老存档里的成员色是上一个版本写的，认得就照原样留着 —— 那是当时的选择。
+      // 认不出来（更老的存档、手改过的 state.json）才按屋里第几个铺一种，
+      // 一屋子人不会全是同一个色。
+      if (!isWhaleColor(member.color)) member.color = freeWhale(used)
       used.add(member.color)
     }
   }

@@ -248,6 +248,13 @@ DSH 自己的端口是 loopback + cookie + 每进程随机 token，**不能**拿
 不是新建一个人。握手时也会带上当前的 `self.name`；若加入方的自称与宿主本人同名，宿主用机器名兜底
 （`GUEST-A` 之类），屋里不会出现两个「我」。历史消息保留当时的 `authorName`：改名改的是以后怎么称呼你。
 
+**虎鲸颜色是「座位」，不是身份**：颜色的真源只有 `room.members[].color`，人不带颜色。
+建屋（`room.create` 的 `color`）与 LAN 加入（`/lan/join` 的 `self.color` + `self.colorPicked`）都要自己挑一档；
+被同屋别人占着的那一档由 `claimColor()`（`src/host/palette.js`）拒掉（`color_taken`），
+不替人换一档。agent 进本地屋时也可以挑；进镜像房间时由宿主按空档安排，颜色不跟着 agent 跨房间走。
+`self.color` 只改当前这间屋：本机房间直接改成员，镜像房间转给宿主 `/lan/self`，再用它回的新投影刷新镜像。
+旧版本存在 `self` / `bots` 上的身份色在 `validateState` 里读进来就删掉，避免出现第二个真相。
+
 **邀请地址**：邀请条上那句 `地址:端口` 是对方唯一要抄的东西，所以它不能只是「网卡表第一项」。
 `os.networkInterfaces()` 的返回顺序没有保证，装了 WSL2 / Hyper-V 的 Windows 上
 `vEthernet (WSL (Hyper-V firewall))` 经常排在 WLAN 前面 —— 取第一项就等于把一个只有本机能通的
@@ -301,14 +308,14 @@ agent 抢答（`authorId === 'me'` 之外还有远程 agent），而且用户看
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| POST | `/lan/join` | `{code, machine, self, agents, build, instance}` → `{peerId, selfMemberId, snapshot}`（同 `instance` 视为同一条 link 回来了：成员接手、id 不变；上一代 peer 已不在时按席位表里的成员 id 落座） |
+| POST | `/lan/join` | `{code, machine, self: {id, name, color, colorPicked}, agents, build, instance}` → `{peerId, selfMemberId, snapshot}`（同 `instance` 视为同一条 link 回来了：成员接手、id 不变；上一代 peer 已不在时按席位表里的成员 id 落座。`colorPicked=true` 且那一档已被同屋别人坐着 → `color_taken`，不替他换） |
 | GET | `/lan/state?peerId=&since=` | 长轮询（25s），房间投影 + revision |
 | POST | `/lan/message` | `{peerId, text, opKey}` → 以该 peer 的人身份发言，回投影 |
 | GET | `/lan/assignments?peerId=` | 长轮询（25s），领取一条待执行的 agent 回合（带 `from`：谁、哪台机器、对方原话） |
 | POST | `/lan/reply` | `{peerId, assignmentId, text\|error\|denied}`（`denied` = 那台机器的授权没过，宿主落 `notice` 而不是失败占位） |
 | POST | `/lan/hold` | `{peerId, assignmentId, ms}` → 把这轮派发的等待期限往后延（对面在等人点授权；上限 180s/次、300s/轮） |
 | POST | `/lan/read` | `{peerId, seq}` → 标记已读，回投影（避免旧快照把未读闪回来） |
-| POST | `/lan/self` | `{peerId, name}` → 改这个 peer 的人名 |
+| POST | `/lan/self` | `{peerId, name?, color?}` → 改这个 peer 的人名和/或它在这间屋里的虎鲸座位；回 `{renamed, colored, snapshot}`（颜色被占 → `color_taken`） |
 | POST | `/lan/messages` | `{peerId, beforeSeq, limit}` → 更早的一页消息（房间从 `peerId` 认，不看请求里的 roomId） |
 | POST | `/lan/leave` | `{peerId}` → 撤掉它的人和 agent |
 | GET | `/lan/ping` | 无鉴权，只回答「这台机器在不在监听」 |

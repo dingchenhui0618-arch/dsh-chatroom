@@ -1,4 +1,5 @@
 import { unreadOf } from './rooms.js'
+import { isWhaleColor } from './palette.js'
 
 /**
  * 给客户端的投影：只给面板需要的字段，消息截到最近 200 条。
@@ -44,9 +45,19 @@ export function pageMessages(room, { beforeSeq, limit } = {}) {
 
 export function project(state, extra = {}) {
   const viewerId = extra.viewerId ?? state.self.id
+  const active = state.rooms.find((room) => room.id === state.activeRoomId) ?? null
+  const mine = active?.members.find((member) => member.id === state.self.id) ?? null
   return {
     revision: state.revision,
-    self: { id: state.self.id, name: state.self.name, color: state.self.color },
+    // 我的虎鲸颜色是「当前这间屋里的这一档」：换屋子就换成那间屋里我的颜色。
+    // colorScope 是能力位：旧宿主把颜色当身份存（没有这个字段），界面据此把
+    // 所有选颜色的入口整块收起来 —— 画出来点了也不会按「每间屋一个座位」生效。
+    self: {
+      id: state.self.id,
+      name: state.self.name,
+      color: isWhaleColor(mine?.color) ? mine.color : null,
+      colorScope: 'room',
+    },
     activeRoomId: state.activeRoomId,
     lan: extra.lan ?? { serving: false, port: null, addresses: [], peers: [], error: null },
     links: (state.links ?? []).map((link) => ({
@@ -67,7 +78,6 @@ export function project(state, extra = {}) {
       id: bot.id,
       name: bot.name,
       role: bot.role,
-      color: bot.color,
       sessionId: bot.sessionId,
       lastError: bot.lastError ?? null,
       lastSpokeAt: bot.lastSpokeAt ?? null,
