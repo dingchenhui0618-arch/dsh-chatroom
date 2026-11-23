@@ -2416,7 +2416,9 @@ try {
           cdp,
           sessionId,
           `[...document.querySelectorAll('.cr-mention-pop .cr-pop-row')].map((node) => {
-            const span = node.querySelector('span')
+            // 名字有自己的类名：一行里还有头像（一只没有文字的鲸），
+            // 按「第一个 span」取会拿到那个空元素。
+            const span = node.querySelector('.cr-pop-name') ?? node.querySelector('span:last-child')
             return span ? String(span.textContent).trim() : String(node.textContent).trim()
           })`,
         )

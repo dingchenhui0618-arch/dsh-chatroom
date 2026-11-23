@@ -1,4 +1,5 @@
 import { newId, newRoomCode } from './state.js'
+import { isWhaleColor, whaleFor } from './palette.js'
 
 /**
  * 房间状态机：纯函数，全部直接改传进来的 state。
@@ -74,6 +75,7 @@ export function createRoom(state, { name, topic, selfName } = {}) {
     kind: 'human',
     name: clean(selfName ?? state.self.name, LIMITS.name) || '我',
     role: '',
+    color: isWhaleColor(state.self.color) ? state.self.color : whaleFor(0),
     botId: null,
     sessionId: null,
     owner: 'local',
@@ -130,11 +132,20 @@ export function addMember(state, { roomId, member } = {}) {
   if (room.members.length >= LIMITS.members) fail('room_full')
   if (room.members.some((row) => row.id === member.id)) return getMember(room, member.id)
   const origin = normalizeOrigin(member.origin)
+  // 颜色跟着身份走：agent 成员用 agent 自己的色，人用调用方给的那个，
+  // 都没有（旧存档、别人那台的老版本）就按屋里第几个铺一种，不让人人都是同一个色。
+  const ownerBot = member.botId ? state.bots?.find((row) => row.id === member.botId) : null
+  const color = isWhaleColor(member.color)
+    ? member.color
+    : isWhaleColor(ownerBot?.color)
+      ? ownerBot.color
+      : whaleFor(room.members.length)
   const row = {
     id: member.id,
     kind: member.kind === 'bot' ? 'bot' : 'human',
     name: clean(member.name, LIMITS.name) || (member.kind === 'bot' ? 'agent' : '访客'),
     role: clean(member.role, LIMITS.role),
+    color,
     botId: member.botId ?? null,
     sessionId: member.sessionId ?? null,
     // owner 是「这个成员由哪台机器负责」：'local' 由本机驱动，peerId 表示
@@ -273,6 +284,9 @@ export function updateMember(state, { roomId, memberId, patch = {} } = {}) {
     member.name = label
   }
   if (patch.role !== undefined) member.role = clean(patch.role, LIMITS.role)
+  // 颜色只认表里那几档：别的值一律忽略（不是报错）—— 那是界面的一个点了没用的点击，
+  // 不值得让整次更新失败。
+  if (patch.color !== undefined && isWhaleColor(patch.color)) member.color = patch.color
   if (patch.reach !== undefined && typeof patch.reach === 'string') member.reach = patch.reach.slice(0, 32)
   if (patch.origin !== undefined) member.origin = normalizeOrigin(patch.origin)
   return member
@@ -297,7 +311,7 @@ export function postMessage(state, { roomId, authorId, text, mentions, replyTo, 
     // 自愈：房间从旧版本带过来的、没有 self 成员的情况。
     author = addMember(state, {
       roomId,
-      member: { id: state.self.id, kind: 'human', name: state.self.name, origin: { kind: 'local' } },
+      member: { id: state.self.id, kind: 'human', name: state.self.name, color: state.self.color, origin: { kind: 'local' } },
     })
   }
   if (!author) fail('author_not_in_room')

@@ -46,7 +46,7 @@ export function project(state, extra = {}) {
   const viewerId = extra.viewerId ?? state.self.id
   return {
     revision: state.revision,
-    self: { id: state.self.id, name: state.self.name },
+    self: { id: state.self.id, name: state.self.name, color: state.self.color },
     activeRoomId: state.activeRoomId,
     lan: extra.lan ?? { serving: false, port: null, addresses: [], peers: [], error: null },
     links: (state.links ?? []).map((link) => ({
@@ -67,6 +67,7 @@ export function project(state, extra = {}) {
       id: bot.id,
       name: bot.name,
       role: bot.role,
+      color: bot.color,
       sessionId: bot.sessionId,
       lastError: bot.lastError ?? null,
       lastSpokeAt: bot.lastSpokeAt ?? null,

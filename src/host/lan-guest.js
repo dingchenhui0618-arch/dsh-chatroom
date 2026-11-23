@@ -89,6 +89,28 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
   const linkById = (id) => links().find((link) => link.id === id) ?? null
   const linkByRoom = (roomId) => links().find((link) => link.localRoomId === roomId) ?? null
 
+  /**
+   * 报给宿主看的「我是谁」「我带谁」。
+   *
+   * colorPicked 是这个包里唯一一个「解释性」字段：颜色本身两边都存着，宿主要知道
+   * 这一档是人点的还是默认的 —— 默认色进别人屋里时可以被换成一档没人用的（见
+   * lan-host 的 roomColor），点过的不许动。
+   */
+  const selfPayload = () => ({
+    id: store.state.self.id,
+    name: store.state.self.name,
+    color: store.state.self.color,
+    colorPicked: store.state.self.colorPicked === true,
+  })
+  const agentsPayload = () =>
+    store.state.bots.map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      role: bot.role,
+      color: bot.color,
+      colorPicked: bot.colorPicked === true,
+    }))
+
   function runtimeOf(linkId) {
     let runtime = runtimes.get(linkId)
     if (!runtime) {
@@ -236,8 +258,11 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
         // 桌面端重启、插件重载之后还是同一个值。宿主靠它认出「是同一个人回来了」，
         // 而不是把旧那组留着当另一个人（见 lan-host.js 的接管逻辑）。
         instance: linkId,
-        self: { id: store.state.self.id, name: store.state.self.name },
-        agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+        // 名字与虎鲸颜色一起报：对面成员列上「我是谁」靠这两样认，缺一样他的屋里
+        // 就会有个颜色对不上的人。colorPicked 说的是「这一档是不是我自己点的」——
+        // 没点过的默认色，宿主可以按他屋里还空着的那一档换掉。
+        self: selfPayload(),
+        agents: agentsPayload(),
         build: BUILD,
       },
       { timeoutMs: 15_000 },
@@ -285,8 +310,8 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
             code: record.code,
             machine: record.machine,
             instance: record.id,
-            self: { id: store.state.self.id, name: store.state.self.name },
-            agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+            self: selfPayload(),
+            agents: agentsPayload(),
             build: BUILD,
           },
           { timeoutMs: 15_000 },
@@ -509,13 +534,16 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
     })
   }
 
-  async function rename(name) {
+  async function rename(name, color) {
     const label = String(name ?? '').trim().slice(0, 60)
     if (!label) return null
+    const body = { name: label }
+    // 颜色只在人点过的时候才带上：不带就是「名字变了，颜色别动」。
+    if (typeof color === 'string') body.color = color
     for (const record of links()) {
       await postJson(
         `${baseUrl(record.host, record.port)}/lan/self`,
-        { peerId: record.peerId, name: label },
+        { peerId: record.peerId, ...body },
         { timeoutMs: 8000 },
       ).catch((error) => log('lan_rename_failed', error))
     }
@@ -538,7 +566,7 @@ export function createLanGuest({ store, runner, gate = null, log = () => {} } = 
           `${baseUrl(peer.host, peer.port)}/lan/agents`,
           {
             peerId: peer.peerId,
-            agents: store.state.bots.map((bot) => ({ id: bot.id, name: bot.name, role: bot.role })),
+            agents: agentsPayload(),
           },
           { timeoutMs: 8000 },
         )
